@@ -10,16 +10,9 @@ def get_available_detectors() -> list[str]:
     available = []
 
     try:
-        from defacer.detection.retinaface import is_retinaface_available
-        if is_retinaface_available():
-            available.append("retinaface")
-    except ImportError:
-        pass
-
-    try:
-        from defacer.detection.yolov8_face import is_yolov8_available
-        if is_yolov8_available():
-            available.append("yolov8-face")
+        from defacer.detection.yolo11_face import is_yolo11_available
+        if is_yolo11_available():
+            available.append("yolo11-face")
     except ImportError:
         pass
 
@@ -28,11 +21,8 @@ def get_available_detectors() -> list[str]:
 
 def create_detector(detector_type: str, **kwargs) -> FaceDetector:
     """指定タイプの検出器を作成"""
-    if detector_type == "retinaface":
-        from defacer.detection.retinaface import RetinaFaceDetector
-        return RetinaFaceDetector(**kwargs)
-    elif detector_type == "yolov8-face":
-        from defacer.detection.yolov8_face import YOLOv8FaceDetector
-        return YOLOv8FaceDetector(**kwargs)
+    if detector_type == "yolo11-face":
+        from defacer.detection.yolo11_face import YOLO11FaceDetector
+        return YOLO11FaceDetector(**kwargs)
     else:
         raise ValueError(f"不明な検出器タイプ: {detector_type}")

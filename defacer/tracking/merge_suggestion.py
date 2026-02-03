@@ -205,7 +205,13 @@ def compute_merge_suggestions(
             position_score = max(0.0, 1.0 - position_distance / max_position_distance) * 0.4
             size_a = _bbox_size(track_a.last_bbox)
             size_b = _bbox_size(track_b.first_bbox)
-            size_ratio = min(size_a[0], size_b[0]) / max(size_a[0], size_b[0])
+
+            # サイズが0の場合はスキップ（無効なバウンディングボックス）
+            max_width = max(size_a[0], size_b[0])
+            if max_width == 0:
+                continue
+
+            size_ratio = min(size_a[0], size_b[0]) / max_width
             size_score = size_ratio * 0.15
             movement_score = 0.05 if abs(size_a[0] - size_b[0]) < 20 else 0.0
             confidence = time_score + position_score + size_score + movement_score

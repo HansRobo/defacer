@@ -175,8 +175,8 @@ class DetectionDialog(QDialog):
         available = get_available_detectors()
         if available:
             self._detector_type.addItems(available)
-            if "retinaface" in available:
-                self._detector_type.setCurrentText("retinaface")
+            if "yolo11-face" in available:
+                self._detector_type.setCurrentText("yolo11-face")
         else:
             self._detector_type.addItem("(利用可能な検出器がありません)")
             self._detector_type.setEnabled(False)

@@ -261,7 +261,7 @@ class MainWindow(QMainWindow):
             detection_layout.addWidget(QLabel(f"利用可能: {detector_info}"))
         else:
             detection_layout.addWidget(QLabel("検出器がインストールされていません"))
-            detection_layout.addWidget(QLabel("pip install retina-face"))
+            detection_layout.addWidget(QLabel("pip install ultralytics huggingface-hub"))
 
         layout.addWidget(detection_group)
 

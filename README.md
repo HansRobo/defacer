@@ -4,7 +4,7 @@
 
 ## 特徴
 
-- **自動顔検知**: RetinaFaceによる高精度な顔検出
+- **自動顔検知**: YOLOv11による高精度な顔検出（WIDERFACE訓練済み、Easy=94.2%, Medium=92.1%）
 - **手動アノテーション**: 検知漏れを手動で指定可能
 - **フレーム間補間**: 開始/終了フレームを指定して中間を自動生成
 - **複数のモザイク方式**: ピクセル化モザイク、ぼかし、塗りつぶし
@@ -125,7 +125,7 @@ defacer auto input.mp4 -o output.mp4 \
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `--detector` | 検出器（retinaface/yolov8-face） | retinaface |
+| `--detector` | 検出器（yolo11-face） | yolo11-face |
 | `--threshold` | 検出信頼度の閾値（0.0-1.0） | 0.5 |
 | `--mosaic-type` | モザイク種類（mosaic/blur/solid） | mosaic |
 | `--block-size` | モザイクブロックサイズ | 10 |
@@ -136,12 +136,9 @@ defacer auto input.mp4 -o output.mp4 \
 
 ## オプション機能
 
-基本インストールにはRetinaFace顔検出とDeepSORTトラッキングが含まれています。以下のオプション機能を追加できます：
+基本インストールにはYOLOv11顔検出（HuggingFaceから自動ダウンロード）とDeepSORTトラッキングが含まれています。以下のオプション機能を追加できます：
 
 ```bash
-# YOLOv8顔検出を追加（RetinaFaceの代替）
-uv pip install -e ".[yolo]"
-
 # 全オプション機能をインストール
 uv pip install -e ".[all]"
 ```
@@ -158,7 +155,7 @@ uv pip install -e ".[all]"
 
 ```
 defacer/
-├── detection/      # 顔検知（RetinaFace, YOLOv8-Face）
+├── detection/      # 顔検知（YOLOv11-Face）
 ├── tracking/       # トラッキング（DeepSORT, Simple）
 ├── anonymization/  # モザイク処理（Mosaic, Blur, Solid）
 ├── video/          # 動画入出力（OpenCV, FFmpeg）
@@ -232,11 +229,10 @@ MIT
 - PyQt5: GUIフレームワーク
 - numpy: 数値計算
 - tqdm: 進捗表示
-- retina-face: RetinaFace顔検出
-- tf-keras: TensorFlowバックエンド
+- ultralytics: YOLOv11顔検出
+- huggingface-hub: YOLOv11モデルの自動ダウンロード
 - deep-sort-realtime: DeepSORTトラッキング
 
 ### オプション
 
-- ultralytics: YOLOv8顔検出（RetinaFaceの代替）
 - ffmpeg-python: 高度な動画エンコード

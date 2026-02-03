@@ -50,9 +50,9 @@ def create_parser() -> argparse.ArgumentParser:
     )
     auto_parser.add_argument(
         "--detector",
-        choices=["retinaface", "yolov8-face"],
-        default="retinaface",
-        help="使用する顔検知器（デフォルト: retinaface）",
+        choices=["yolo11-face"],
+        default="yolo11-face",
+        help="使用する顔検知器（デフォルト: yolo11-face）",
     )
     auto_parser.add_argument(
         "--threshold",
@@ -151,7 +151,7 @@ def run_auto(args: argparse.Namespace) -> int:
     if args.detector not in available:
         if not available:
             print(f"エラー: 利用可能な検出器がありません。", file=sys.stderr)
-            print("pip install retina-face でRetinaFaceをインストールしてください", file=sys.stderr)
+            print("pip install ultralytics huggingface-hub でYOLOv11をインストールしてください", file=sys.stderr)
             return 1
         print(f"警告: {args.detector}が利用できません。{available[0]}を使用します。", file=sys.stderr)
         args.detector = available[0]

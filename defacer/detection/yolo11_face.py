@@ -1,12 +1,12 @@
-"""YOLOv8-Face顔検知実装"""
+"""YOLOv11-Face顔検知実装"""
 
 import numpy as np
 
 from defacer.detection.base import FaceDetector, Detection
 
 
-class YOLOv8FaceDetector(FaceDetector):
-    """YOLOv8-Faceを使用した高速顔検知"""
+class YOLO11FaceDetector(FaceDetector):
+    """YOLOv11-Faceを使用した高速顔検知（WIDERFACE訓練済み）"""
 
     def __init__(
         self,
@@ -39,11 +39,32 @@ class YOLOv8FaceDetector(FaceDetector):
         if self._model_path:
             self._model = YOLO(self._model_path)
         else:
-            # YOLOv8n-faceモデルを使用
-            # 注: 実際には事前にダウンロードしたモデルを使用する必要があります
-            # デフォルトのYOLOv8nは一般物体検出用なので、
-            # face検出用にファインチューニングされたモデルが必要
-            self._model = YOLO("yolov8n.pt")  # 一般物体検出モデル
+            # YOLOv11n顔検出モデルを使用（WIDERFACE訓練済み）
+            # HuggingFace Hubから自動ダウンロード
+            try:
+                from huggingface_hub import hf_hub_download
+            except ImportError:
+                raise ImportError(
+                    "huggingface_hubがインストールされていません。\n"
+                    "pip install huggingface-hub でインストールしてください。"
+                )
+
+            print("YOLOv11顔検出モデルをダウンロード中...")
+            try:
+                model_path = hf_hub_download(
+                    repo_id="AdamCodd/YOLOv11n-face-detection",
+                    filename="model.pt",
+                    cache_dir=None,  # デフォルトキャッシュを使用
+                )
+                print(f"ダウンロード完了: {model_path}")
+            except Exception as e:
+                raise RuntimeError(
+                    f"YOLOv11顔検出モデルのダウンロードに失敗しました: {e}\n"
+                    "手動でダウンロードしてください: "
+                    "https://huggingface.co/AdamCodd/YOLOv11n-face-detection"
+                )
+
+            self._model = YOLO(model_path)
 
         self._initialized = True
 
@@ -60,14 +81,14 @@ class YOLOv8FaceDetector(FaceDetector):
         self._ensure_initialized()
 
         try:
-            # YOLOv8で検出
+            # YOLOv11で検出
             results = self._model(
                 frame,
                 conf=self.confidence_threshold,
                 verbose=False,
             )
         except Exception as e:
-            print(f"YOLOv8検出エラー: {e}")
+            print(f"YOLOv11検出エラー: {e}")
             return []
 
         detections = []
@@ -77,15 +98,8 @@ class YOLOv8FaceDetector(FaceDetector):
                 continue
 
             for box in result.boxes:
-                # クラスIDが0（person）の場合のみ処理
-                # 注: face専用モデルの場合はクラスIDが異なる可能性あり
-                cls_id = int(box.cls[0]) if box.cls is not None else -1
-
-                # 一般モデルの場合、personクラス（ID=0）のみを検出
-                # face専用モデルの場合はこの条件を変更
-                if cls_id != 0:
-                    continue
-
+                # 顔検出専用モデルのため、クラスフィルタリング不要
+                # すべての検出結果が顔として扱われる
                 confidence = float(box.conf[0]) if box.conf is not None else 0.0
 
                 if confidence < self.confidence_threshold:
@@ -105,10 +119,11 @@ class YOLOv8FaceDetector(FaceDetector):
         return detections
 
 
-def is_yolov8_available() -> bool:
-    """YOLOv8が利用可能か確認"""
+def is_yolo11_available() -> bool:
+    """YOLOv11が利用可能か確認"""
     try:
         from ultralytics import YOLO
+        from huggingface_hub import hf_hub_download
         return True
     except ImportError:
         return False

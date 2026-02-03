@@ -8,8 +8,7 @@ from pathlib import Path
 class DetectorType(Enum):
     """顔検知器の種類"""
 
-    RETINAFACE = "retinaface"
-    YOLOV8_FACE = "yolov8-face"
+    YOLO11_FACE = "yolo11-face"
 
 
 class AnonymizationType(Enum):
@@ -24,7 +23,7 @@ class AnonymizationType(Enum):
 class DetectionConfig:
     """顔検知設定"""
 
-    detector_type: DetectorType = DetectorType.RETINAFACE
+    detector_type: DetectorType = DetectorType.YOLO11_FACE
     confidence_threshold: float = 0.5
     bbox_scale: float = 1.1  # バウンディングボックス拡大率
 
