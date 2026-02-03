@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# uv
+.uv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Models (large files)
+models/*.pt
+models/*.pth
+models/*.onnx
+!models/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project specific
+output/
+*.mp4
+*.avi
+*.mov
+*.mkv
+!tests/fixtures/*
+
+# Claude Code (個人設定とプラン)
+.claude/
