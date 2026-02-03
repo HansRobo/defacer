@@ -1,6 +1,6 @@
 """動画プレーヤーウィジェット"""
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import (
     QImage,
     QPixmap,
@@ -9,6 +9,7 @@ from PyQt5.QtGui import (
     QColor,
     QBrush,
     QCursor,
+    QFont,
 )
 from PyQt5.QtWidgets import QLabel, QSizePolicy
 
@@ -182,25 +183,79 @@ class VideoPlayerWidget(QLabel):
         painter.end()
         self.setPixmap(scaled_pixmap)
 
+    def _get_track_color(self, track_id: int | None) -> tuple[int, int, int]:
+        """トラックIDに基づいて色を生成（HSVベース）"""
+        if track_id is None:
+            return (200, 200, 200)  # グレー
+
+        # トラックIDを使って色相を分散
+        # 黄金角（137.5度）を使って視覚的に区別しやすい色を生成
+        hue = (track_id * 137.5) % 360
+        color = QColor.fromHsvF(hue / 360, 0.8, 0.95)
+        return (color.red(), color.green(), color.blue())
+
     def _draw_annotation(self, painter: QPainter, ann: Annotation, is_selected: bool) -> None:
         """アノテーションを描画"""
         if is_selected:
-            pen = QPen(QColor(0, 200, 255), 3)
-            brush = QBrush(QColor(0, 200, 255, 40))
-        elif ann.is_manual:
-            pen = QPen(QColor(0, 255, 0), 2)
-            brush = QBrush(QColor(0, 255, 0, 30))
+            # 選択時は明るいシアン
+            r, g, b = 0, 200, 255
+            pen = QPen(QColor(r, g, b), 3)
+            brush = QBrush(QColor(r, g, b, 40))
         else:
-            pen = QPen(QColor(255, 165, 0), 2)
-            brush = QBrush(QColor(255, 165, 0, 30))
+            # トラックIDに基づいて色を決定
+            r, g, b = self._get_track_color(ann.track_id)
+            pen = QPen(QColor(r, g, b), 2)
+            brush = QBrush(QColor(r, g, b, 30))
 
         painter.setPen(pen)
         painter.setBrush(brush)
         self._draw_bbox(painter, ann.bbox)
 
+        # トラックIDを表示
+        if ann.track_id is not None:
+            self._draw_track_label(painter, ann.bbox, ann.track_id, QColor(r, g, b))
+
         # 選択時はリサイズハンドルを描画
         if is_selected and self._edit_mode == self.MODE_EDIT:
             self._draw_resize_handles(painter, ann.bbox)
+
+    def _draw_track_label(self, painter: QPainter, bbox: BoundingBox, track_id: int, color: QColor) -> None:
+        """トラックIDラベルを描画"""
+        x1 = int(bbox.x1 * self._scale)
+        y1 = int(bbox.y1 * self._scale)
+
+        # ラベルテキスト
+        label_text = f"#{track_id}"
+
+        # フォント設定
+        font = QFont("Arial", 12, QFont.Bold)
+        painter.setFont(font)
+
+        # テキストサイズを取得
+        text_rect = painter.fontMetrics().boundingRect(label_text)
+        padding = 4
+        label_width = text_rect.width() + padding * 2
+        label_height = text_rect.height() + padding * 2
+
+        # ラベル背景を描画（バウンディングボックスの左上）
+        label_x = x1
+        label_y = y1 - label_height - 2
+
+        # 画面外に出る場合は内側に表示
+        if label_y < 0:
+            label_y = y1 + 2
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawRect(label_x, label_y, label_width, label_height)
+
+        # テキストを描画
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.drawText(
+            label_x + padding,
+            label_y + padding + text_rect.height() - painter.fontMetrics().descent(),
+            label_text
+        )
 
     def _draw_bbox(self, painter: QPainter, bbox: BoundingBox) -> None:
         """バウンディングボックスを描画"""
@@ -256,6 +311,40 @@ class VideoPlayerWidget(QLabel):
         if 0 <= frame_x < self._reader.width and 0 <= frame_y < self._reader.height:
             return (int(frame_x), int(frame_y))
         return None
+
+    def contextMenuEvent(self, event) -> None:
+        """右クリックメニューを表示"""
+        from PyQt5.QtWidgets import QMenu
+
+        coords = self._widget_to_frame_coords(event.x(), event.y())
+        if coords is None or self._edit_mode == self.MODE_VIEW:
+            return
+
+        x, y = coords
+        result = self._annotation_store.get_annotation_at_point(
+            self._current_frame_number, x, y
+        )
+
+        if result is None:
+            return
+
+        ann, idx = result
+
+        # メニュー構築
+        menu = QMenu(self)
+
+        # トラックIDがある場合のみ統合メニューを表示
+        if ann.track_id is not None:
+            merge_action = menu.addAction(f"トラック {ann.track_id} を別のトラックに統合...")
+            merge_action.triggered.connect(lambda: self._show_merge_dialog(ann))
+
+            menu.addSeparator()
+
+        # 削除メニュー
+        delete_action = menu.addAction("このアノテーションを削除")
+        delete_action.triggered.connect(lambda: self._delete_annotation_at_point(ann))
+
+        menu.exec_(event.globalPos())
 
     def mousePressEvent(self, event) -> None:
         """マウスボタン押下"""
@@ -647,6 +736,110 @@ class VideoPlayerWidget(QLabel):
         super().resizeEvent(event)
         if self._current_frame is not None:
             self._update_display()
+
+    def _show_merge_dialog(self, annotation: Annotation) -> None:
+        """トラック統合ダイアログを表示"""
+        from PyQt5.QtWidgets import QInputDialog, QMessageBox
+
+        source_track_id = annotation.track_id
+        if source_track_id is None:
+            return
+
+        # 利用可能なトラックIDを取得
+        available_tracks = sorted(self._annotation_store.get_all_track_ids())
+        available_tracks = [t for t in available_tracks if t != source_track_id]
+
+        if not available_tracks:
+            QMessageBox.warning(
+                self,
+                "トラック統合",
+                "統合先のトラックが存在しません。",
+            )
+            return
+
+        # トラック選択ダイアログ
+        items = [f"トラック {tid}" for tid in available_tracks]
+        item, ok = QInputDialog.getItem(
+            self,
+            "トラック統合",
+            f"トラック {source_track_id} の統合先を選択してください:",
+            items,
+            0,
+            False,
+        )
+
+        if ok and item:
+            target_track_id = available_tracks[items.index(item)]
+            self._merge_tracks(source_track_id, target_track_id)
+
+    def _merge_tracks(self, source_track_id: int, target_track_id: int) -> None:
+        """トラックを統合"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        # 衝突チェック（同じフレームに両方のトラックが存在するか）
+        conflicts = self._check_track_conflicts(source_track_id, target_track_id)
+
+        if conflicts:
+            reply = QMessageBox.question(
+                self,
+                "トラック統合の確認",
+                f"以下のフレームで統合元と統合先が重複しています:\n"
+                f"{', '.join(map(str, conflicts[:10]))}"
+                f"{'...' if len(conflicts) > 10 else ''}\n\n"
+                f"統合元のアノテーション（トラック {source_track_id}）を削除して続行しますか？",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            # 重複フレームの統合元アノテーションを削除
+            self._remove_track_from_frames(source_track_id, conflicts)
+
+        # トラック統合を実行
+        count = self._annotation_store.merge_tracks(source_track_id, target_track_id)
+
+        self.annotations_changed.emit()
+        self._update_display()
+
+        # 完了メッセージ
+        QMessageBox.information(
+            self,
+            "トラック統合",
+            f"トラック {source_track_id} を {target_track_id} に統合しました\n"
+            f"({count}個のアノテーションを更新)",
+        )
+
+    def _check_track_conflicts(
+        self, source_track_id: int, target_track_id: int
+    ) -> list[int]:
+        """2つのトラックが同じフレームに存在するフレームのリストを返す"""
+        source_frames = set()
+        target_frames = set()
+
+        for ann in self._annotation_store:
+            if ann.track_id == source_track_id:
+                source_frames.add(ann.frame)
+            elif ann.track_id == target_track_id:
+                target_frames.add(ann.frame)
+
+        conflicts = sorted(source_frames & target_frames)
+        return conflicts
+
+    def _remove_track_from_frames(
+        self, track_id: int, frames: list[int]
+    ) -> None:
+        """指定トラックIDの指定フレームのアノテーションを削除"""
+        for frame in frames:
+            anns = self._annotation_store.get_frame_annotations(frame)
+            to_remove = [ann for ann in anns if ann.track_id == track_id]
+            for ann in to_remove:
+                self._annotation_store.remove_annotation(ann, save_undo=False)
+
+    def _delete_annotation_at_point(self, annotation: Annotation) -> None:
+        """指定のアノテーションを削除"""
+        self._annotation_store.remove_annotation(annotation)
+        self.annotations_changed.emit()
+        self._update_display()
 
     def release(self) -> None:
         """リソースを解放"""

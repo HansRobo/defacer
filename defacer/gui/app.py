@@ -32,6 +32,10 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSpinBox,
     QInputDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QDialog,
 )
 
 from defacer.gui.video_player import VideoPlayerWidget
@@ -39,6 +43,7 @@ from defacer.gui.timeline import TimelineWidget
 from defacer.gui.annotation import AnnotationStore
 from defacer.gui.export_dialog import ExportDialog
 from defacer.gui.detection_dialog import DetectionDialog
+from defacer.gui.track_editor import TrackEditorDialog
 from defacer.tracking.interpolation import interpolate_track
 from defacer.detection import get_available_detectors
 
@@ -192,6 +197,37 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(annotation_group)
 
+        # トラック一覧グループ
+        track_group = QGroupBox("トラック一覧")
+        track_layout = QVBoxLayout(track_group)
+
+        self._track_table = QTableWidget()
+        self._track_table.setColumnCount(3)
+        self._track_table.setHorizontalHeaderLabels(["ID", "フレーム範囲", "数"])
+        self._track_table.horizontalHeader().setStretchLastSection(False)
+        self._track_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self._track_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self._track_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._track_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._track_table.setMaximumHeight(150)
+        self._track_table.setToolTip("トラックをクリックして統合先を選択できます")
+        track_layout.addWidget(self._track_table)
+
+        # トラック統合ボタン
+        merge_btn_layout = QHBoxLayout()
+        self._merge_tracks_btn = QPushButton("選択を統合...")
+        self._merge_tracks_btn.clicked.connect(self._merge_selected_tracks)
+        self._merge_tracks_btn.setEnabled(False)
+        self._merge_tracks_btn.setToolTip("選択した2つのトラックを統合")
+        merge_btn_layout.addWidget(self._merge_tracks_btn)
+
+        refresh_tracks_btn = QPushButton("更新")
+        refresh_tracks_btn.clicked.connect(self._update_track_list)
+        merge_btn_layout.addWidget(refresh_tracks_btn)
+        track_layout.addLayout(merge_btn_layout)
+
+        layout.addWidget(track_group)
+
         # 検出設定グループ
         detection_group = QGroupBox("自動検出")
         detection_layout = QVBoxLayout(detection_group)
@@ -298,6 +334,14 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
 
+        # トラック編集
+        track_editor_action = QAction("トラック編集(&T)...", self)
+        track_editor_action.setShortcut("Ctrl+T")
+        track_editor_action.triggered.connect(self._open_track_editor)
+        edit_menu.addAction(track_editor_action)
+
+        edit_menu.addSeparator()
+
         # 編集モード
         mode_menu = edit_menu.addMenu("編集モード(&M)")
         mode_group = QActionGroup(self)
@@ -396,6 +440,13 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        # トラック編集ボタン
+        track_editor_action = QAction("トラック編集", self)
+        track_editor_action.triggered.connect(self._open_track_editor)
+        toolbar.addAction(track_editor_action)
+
+        toolbar.addSeparator()
+
         # 編集モードボタン
         draw_action = QAction("描画", self)
         draw_action.setCheckable(True)
@@ -479,6 +530,7 @@ class MainWindow(QMainWindow):
             )
             self._update_video_info()
             self._update_annotation_info()
+            self._update_track_list()
 
             # 同名のアノテーションファイルがあれば読み込み
             annotation_path = path.with_suffix(".defacer.json")
@@ -538,6 +590,7 @@ class MainWindow(QMainWindow):
         self._unsaved_changes = True
         self._save_action.setEnabled(True)
         self._update_annotation_info()
+        self._update_track_list()
         self._update_window_title()
 
     def _on_annotation_selected(self, annotation) -> None:
@@ -586,6 +639,106 @@ class MainWindow(QMainWindow):
         self._video_player.set_auto_interpolate(enabled)
         status = "有効" if enabled else "無効"
         self._status_bar.showMessage(f"自動補間モード: {status}")
+
+    def _update_track_list(self) -> None:
+        """トラック一覧を更新"""
+        store = self._video_player.annotation_store
+        track_ids = sorted(store.get_all_track_ids())
+
+        self._track_table.setRowCount(len(track_ids))
+
+        for row, track_id in enumerate(track_ids):
+            info = store.get_track_info(track_id)
+
+            # トラックID
+            id_item = QTableWidgetItem(f"#{track_id}")
+            id_item.setData(Qt.UserRole, track_id)
+            self._track_table.setItem(row, 0, id_item)
+
+            # フレーム範囲
+            frame_range = f"{info['frame_min']}-{info['frame_max']}"
+            range_item = QTableWidgetItem(frame_range)
+            self._track_table.setItem(row, 1, range_item)
+
+            # アノテーション数
+            count_item = QTableWidgetItem(str(info['annotation_count']))
+            self._track_table.setItem(row, 2, count_item)
+
+        # 選択状態に応じてボタンを有効化
+        self._track_table.itemSelectionChanged.connect(self._on_track_selection_changed)
+
+    def _on_track_selection_changed(self) -> None:
+        """トラック選択が変更された時"""
+        selected_rows = self._track_table.selectionModel().selectedRows()
+        self._merge_tracks_btn.setEnabled(len(selected_rows) == 2)
+
+    def _merge_selected_tracks(self) -> None:
+        """選択した2つのトラックを統合"""
+        selected_rows = self._track_table.selectionModel().selectedRows()
+        if len(selected_rows) != 2:
+            QMessageBox.warning(
+                self,
+                "トラック統合",
+                "統合するには2つのトラックを選択してください。",
+            )
+            return
+
+        # 選択されたトラックIDを取得
+        track_ids = []
+        for row in selected_rows:
+            item = self._track_table.item(row.row(), 0)
+            track_id = item.data(Qt.UserRole)
+            track_ids.append(track_id)
+
+        # 統合先を選択
+        items = [f"トラック #{tid}" for tid in track_ids]
+        item, ok = QInputDialog.getItem(
+            self,
+            "トラック統合",
+            "統合先のトラックを選択してください:",
+            items,
+            0,
+            False,
+        )
+
+        if not ok or not item:
+            return
+
+        target_track_id = track_ids[items.index(item)]
+        source_track_id = track_ids[1 - items.index(item)]
+
+        # VideoPlayerWidgetのメソッドを使用して統合
+        # 直接_merge_tracksを呼ぶのではなく、AnnotationStoreを使用
+        store = self._video_player.annotation_store
+
+        # 衝突チェック
+        conflicts = self._video_player._check_track_conflicts(source_track_id, target_track_id)
+
+        if conflicts:
+            reply = QMessageBox.question(
+                self,
+                "トラック統合の確認",
+                f"以下のフレームで統合元と統合先が重複しています:\n"
+                f"{', '.join(map(str, conflicts[:10]))}"
+                f"{'...' if len(conflicts) > 10 else ''}\n\n"
+                f"統合元のアノテーション（トラック #{source_track_id}）を削除して続行しますか？",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            # 重複フレームの統合元アノテーションを削除
+            self._video_player._remove_track_from_frames(source_track_id, conflicts)
+
+        # トラック統合を実行
+        count = store.merge_tracks(source_track_id, target_track_id)
+
+        self._on_annotations_changed()
+        self._update_track_list()
+
+        self._status_bar.showMessage(
+            f"トラック #{source_track_id} → #{target_track_id} を統合しました ({count}個のアノテーション)"
+        )
 
     def _undo(self) -> None:
         """アンドゥ"""
@@ -724,14 +877,50 @@ class MainWindow(QMainWindow):
         )
         dialog.exec_()
 
+    def _open_track_editor(self) -> None:
+        """トラック編集ダイアログを開く"""
+        if self._current_video_path is None:
+            QMessageBox.warning(
+                self,
+                "トラック編集",
+                "動画ファイルを開いてください。",
+            )
+            return
+
+        if len(self._video_player.annotation_store) == 0:
+            QMessageBox.warning(
+                self,
+                "トラック編集",
+                "アノテーションがありません。先にアノテーションを追加してください。",
+            )
+            return
+
+        dialog = TrackEditorDialog(
+            self,
+            self._video_player.annotation_store,
+            self._video_player.frame_count,
+            self._video_player.video_width,
+            self._video_player.video_height,
+            self._video_player.current_frame_number,
+        )
+
+        if dialog.exec_() == QDialog.Accepted:
+            # 変更が適用された
+            self._on_annotations_changed()
+            self._status_bar.showMessage("トラック編集を適用しました")
+
     def _show_about(self) -> None:
         """Aboutダイアログ"""
         QMessageBox.about(
             self,
             "Defacerについて",
-            "Defacer v0.1.0\n\n"
+            "Defacer v0.2.0\n\n"
             "動画内の顔を自動検知してモザイク処理を行うソフトウェア\n\n"
-            "検知漏れがある場合は手動で顔領域を指定できます。",
+            "検知漏れがある場合は手動で顔領域を指定できます。\n\n"
+            "v0.2.0の新機能:\n"
+            "- トラック編集専用画面\n"
+            "- 複数トラック選択と一括統合\n"
+            "- 自動統合サジェスト（連鎖トラック検出）",
         )
 
     def _show_shortcuts(self) -> None:

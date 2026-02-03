@@ -196,6 +196,66 @@ class AnnotationStore:
         self._next_track_id += 1
         return track_id
 
+    def get_all_track_ids(self) -> set[int]:
+        """すべてのトラックIDを取得（None除く）"""
+        track_ids = set()
+        for ann in self:
+            if ann.track_id is not None:
+                track_ids.add(ann.track_id)
+        return track_ids
+
+    def get_track_info(self, track_id: int) -> dict:
+        """トラックの情報を取得（フレーム範囲、アノテーション数）"""
+        frames = []
+        count = 0
+        for ann in self:
+            if ann.track_id == track_id:
+                frames.append(ann.frame)
+                count += 1
+
+        if not frames:
+            return {"exists": False}
+
+        return {
+            "exists": True,
+            "frame_min": min(frames),
+            "frame_max": max(frames),
+            "frame_count": len(set(frames)),
+            "annotation_count": count,
+        }
+
+    def merge_tracks(
+        self,
+        source_track_id: int,
+        target_track_id: int,
+        save_undo: bool = True,
+    ) -> int:
+        """
+        source_track_idのすべてのアノテーションをtarget_track_idに統合
+
+        Args:
+            source_track_id: 統合元のトラックID
+            target_track_id: 統合先のトラックID
+            save_undo: Undoスタックに保存するか
+
+        Returns:
+            変更されたアノテーション数
+        """
+        if source_track_id == target_track_id:
+            return 0
+
+        if save_undo:
+            self._save_undo_state()
+
+        count = 0
+        for frame, anns in self.annotations.items():
+            for ann in anns:
+                if ann.track_id == source_track_id:
+                    ann.track_id = target_track_id
+                    count += 1
+
+        return count
+
     def interpolate_frames(
         self,
         track_id: int,
