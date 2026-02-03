@@ -24,21 +24,46 @@ class DeepSORTFaceTracker(FaceTracker):
         if self._initialized:
             return
 
-        try:
-            from deep_sort_realtime.deepsort_tracker import DeepSort
-            self._tracker = DeepSort(
-                max_age=self.max_age,
-                n_init=self.min_hits,
-                nms_max_overlap=0.7,
-                max_cosine_distance=0.3,
-                nn_budget=100,
-            )
-            self._initialized = True
-        except ImportError:
-            raise ImportError(
-                "deep-sort-realtimeがインストールされていません。\n"
-                "pip install deep-sort-realtime でインストールしてください。"
-            )
+        import os
+        import torch
+        from deep_sort_realtime.deepsort_tracker import DeepSort
+
+        # GPU使用の判定
+        use_gpu = False
+        use_half = False
+
+        if torch.cuda.is_available():
+            if torch.version.hip is not None:
+                # ROCm環境
+                # gfx1103などの新しいアーキテクチャは公式PyTorchでサポートされていない可能性がある
+                # 環境変数DEFACER_FORCE_ROCMが設定されている場合のみGPUを試す
+                if os.environ.get("DEFACER_FORCE_ROCM") == "1":
+                    use_gpu = True
+                    use_half = False
+                else:
+                    # デフォルトはCPUモード（安定性優先）
+                    import warnings
+                    warnings.warn(
+                        "ROCm環境が検出されましたが、gfx1103など一部のGPUは公式PyTorchでサポートされていません。"
+                        "CPUモードで実行します。GPUを強制的に使用する場合は環境変数 DEFACER_FORCE_ROCM=1 を設定してください。",
+                        RuntimeWarning
+                    )
+                    use_gpu = False
+            else:
+                # CUDA環境ではFP16を使用
+                use_gpu = True
+                use_half = True
+
+        self._tracker = DeepSort(
+            max_age=self.max_age,
+            n_init=self.min_hits,
+            nms_max_overlap=0.7,
+            max_cosine_distance=0.3,
+            nn_budget=100,
+            embedder_gpu=use_gpu,
+            half=use_half,
+        )
+        self._initialized = True
 
     def update(
         self, detections: list[Detection], frame: np.ndarray | None = None
@@ -48,7 +73,7 @@ class DeepSORTFaceTracker(FaceTracker):
 
         Args:
             detections: 現在のフレームでの検出結果
-            frame: 現在のフレーム（外観特徴抽出用）
+            frame: 現在のフレーム(外観特徴抽出用)
 
         Returns:
             追跡中の顔リスト
@@ -101,117 +126,6 @@ class DeepSORTFaceTracker(FaceTracker):
             self._initialized = False
 
 
-class SimpleTracker(FaceTracker):
-    """シンプルなIoUベーストラッカー（DeepSORTが利用できない場合用）"""
-
-    def __init__(self, max_age: int = 30, min_hits: int = 3, iou_threshold: float = 0.3):
-        super().__init__(max_age, min_hits)
-        self.iou_threshold = iou_threshold
-        self._tracks: dict[int, dict] = {}
-        self._next_id = 1
-
-    def update(
-        self, detections: list[Detection], frame: np.ndarray | None = None
-    ) -> list[TrackedFace]:
-        """IoUベースのトラッキング"""
-        if not detections:
-            # 全トラックをエージング
-            for track_id in list(self._tracks.keys()):
-                self._tracks[track_id]["age"] += 1
-                if self._tracks[track_id]["age"] > self.max_age:
-                    del self._tracks[track_id]
-            return []
-
-        # 既存トラックと検出をマッチング
-        matched = set()
-        for det in detections:
-            best_iou = 0
-            best_track_id = None
-
-            for track_id, track in self._tracks.items():
-                if track_id in matched:
-                    continue
-                iou = self._compute_iou(det.bbox, track["bbox"])
-                if iou > best_iou and iou > self.iou_threshold:
-                    best_iou = iou
-                    best_track_id = track_id
-
-            if best_track_id is not None:
-                # 既存トラックを更新
-                self._tracks[best_track_id]["bbox"] = det.bbox
-                self._tracks[best_track_id]["confidence"] = det.confidence
-                self._tracks[best_track_id]["age"] = 0
-                self._tracks[best_track_id]["hits"] += 1
-                matched.add(best_track_id)
-            else:
-                # 新規トラック
-                self._tracks[self._next_id] = {
-                    "bbox": det.bbox,
-                    "confidence": det.confidence,
-                    "age": 0,
-                    "hits": 1,
-                }
-                matched.add(self._next_id)
-                self._next_id += 1
-
-        # マッチしなかったトラックをエージング
-        for track_id in list(self._tracks.keys()):
-            if track_id not in matched:
-                self._tracks[track_id]["age"] += 1
-                if self._tracks[track_id]["age"] > self.max_age:
-                    del self._tracks[track_id]
-
-        # 確定したトラックを返す
-        tracked_faces = []
-        for track_id, track in self._tracks.items():
-            if track["hits"] >= self.min_hits:
-                tracked_faces.append(TrackedFace(
-                    track_id=track_id,
-                    bbox=track["bbox"],
-                    confidence=track["confidence"],
-                    age=track["age"],
-                ))
-
-        return tracked_faces
-
-    def _compute_iou(
-        self, bbox1: tuple[int, int, int, int], bbox2: tuple[int, int, int, int]
-    ) -> float:
-        """IoU（Intersection over Union）を計算"""
-        x1 = max(bbox1[0], bbox2[0])
-        y1 = max(bbox1[1], bbox2[1])
-        x2 = min(bbox1[2], bbox2[2])
-        y2 = min(bbox1[3], bbox2[3])
-
-        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-
-        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
-        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
-
-        union_area = area1 + area2 - inter_area
-
-        if union_area == 0:
-            return 0
-
-        return inter_area / union_area
-
-    def reset(self) -> None:
-        """トラッカーをリセット"""
-        self._tracks.clear()
-        self._next_id = 1
-
-
-def is_deepsort_available() -> bool:
-    """DeepSORTが利用可能か確認"""
-    try:
-        from deep_sort_realtime.deepsort_tracker import DeepSort
-        return True
-    except ImportError:
-        return False
-
-
-def create_tracker(use_deepsort: bool = True, **kwargs) -> FaceTracker:
+def create_tracker(**kwargs) -> FaceTracker:
     """トラッカーを作成"""
-    if use_deepsort and is_deepsort_available():
-        return DeepSORTFaceTracker(**kwargs)
-    return SimpleTracker(**kwargs)
+    return DeepSORTFaceTracker(**kwargs)

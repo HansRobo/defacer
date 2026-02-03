@@ -22,7 +22,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.1.0",
+        version="%(prog)s 0.2.2",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
@@ -175,15 +175,13 @@ def run_auto(args: argparse.Namespace) -> int:
     tracker = None
     if not args.no_tracking:
         try:
-            from defacer.tracking import create_tracker, is_tracking_available
-            if is_tracking_available():
-                tracker = create_tracker(use_deepsort=True, max_age=30, min_hits=3)
-                print("DeepSORTトラッキングを使用")
-            else:
-                tracker = create_tracker(use_deepsort=False, max_age=30, min_hits=3)
-                print("シンプルトラッキングを使用（DeepSORTが利用できません）")
-        except ImportError:
-            print("警告: トラッキングが利用できません。フレーム単位で検出します。")
+            from defacer.tracking import create_tracker
+            tracker = create_tracker(max_age=30, min_hits=3)
+            print("DeepSORTトラッキングを使用")
+        except ImportError as e:
+            print(f"エラー: トラッキングが利用できません: {e}", file=sys.stderr)
+            print("pip install deep-sort-realtime でインストールしてください", file=sys.stderr)
+            return 1
 
     # 動画を読み込み
     try:

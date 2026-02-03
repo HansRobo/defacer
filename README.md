@@ -136,14 +136,11 @@ defacer auto input.mp4 -o output.mp4 \
 
 ## オプション機能
 
-基本インストールにはRetinaFace顔検出が含まれています。以下のオプション機能を追加できます：
+基本インストールにはRetinaFace顔検出とDeepSORTトラッキングが含まれています。以下のオプション機能を追加できます：
 
 ```bash
 # YOLOv8顔検出を追加（RetinaFaceの代替）
 uv pip install -e ".[yolo]"
-
-# トラッキング機能を追加（フレーム間の顔追跡）
-uv pip install -e ".[tracking]"
 
 # 全オプション機能をインストール
 uv pip install -e ".[all]"
@@ -188,14 +185,32 @@ QT_QPA_PLATFORM=xcb defacer gui
 QT_QPA_PLATFORM=wayland defacer gui
 ```
 
-### GPUが検出されない
+### GPU関連の問題
 
-TensorFlowはCPUで動作します。GPUを使用する場合：
+#### CUDA環境
 
-1. **CUDA環境**: CUDAドライバーとcudnnをインストール後、`./scripts/install.sh --cuda`を実行
-2. **ROCm環境**: ROCmドライバーをインストール後、`./scripts/install.sh --rocm`を実行
+CUDAドライバーとcudnnをインストール後、`./scripts/install.sh --cuda`を実行してください。
 
-インストールスクリプトは環境に応じて適切なTensorFlow/PyTorchバージョンを自動選択します。
+#### ROCm環境
+
+**重要**: ROCm環境では、一部の新しいGPUアーキテクチャ（gfx1103: Radeon 780M など）が公式PyTorchでサポートされていません。この場合、DeepSORTトラッキングはCPUモードで動作します。
+
+**推奨事項**:
+1. **安定性優先（デフォルト）**: CPUモードで実行（追加設定不要）
+2. **GPU強制使用**: 以下の環境変数を設定してからdefacerを実行
+   ```bash
+   export DEFACER_FORCE_ROCM=1
+   export HSA_OVERRIDE_GFX_VERSION=11.0.0
+   export HSA_ENABLE_SDMA=0
+   export MIOPEN_DEBUG_CONV_DIRECT=0
+   defacer auto input.mp4 -o output.mp4
+   ```
+   ⚠️ 注意: GPU強制モードは不安定な場合があります
+
+**ROCmバージョン**:
+- PyTorch 2.5.1+rocm6.2 がインストールされています
+- システムROCm 6.3以降を推奨
+- gfx1103サポートは将来のPyTorchバージョンで改善される予定です
 
 ### メモリ不足エラー
 
@@ -219,9 +234,9 @@ MIT
 - tqdm: 進捗表示
 - retina-face: RetinaFace顔検出
 - tf-keras: TensorFlowバックエンド
+- deep-sort-realtime: DeepSORTトラッキング
 
 ### オプション
 
 - ultralytics: YOLOv8顔検出（RetinaFaceの代替）
-- deep-sort-realtime: DeepSORTトラッキング
 - ffmpeg-python: 高度な動画エンコード

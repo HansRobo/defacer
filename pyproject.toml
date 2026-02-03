@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "defacer"
-version = "0.2.1"
+version = "0.2.2"
 description = "動画内の顔を自動検知してモザイク処理を行うソフトウェア"
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,21 +33,18 @@ dependencies = [
     "tqdm>=4.65.0",
     "retina-face>=0.0.13",
     "tf-keras>=2.20.0",
+    "deep-sort-realtime>=1.3.2",
 ]
 
 [project.optional-dependencies]
 yolo = [
     "ultralytics>=8.0.0",
 ]
-tracking = [
-    "deep-sort-realtime>=1.3.2",
-]
 export = [
     "ffmpeg-python>=0.2.0",
 ]
 all = [
     "ultralytics>=8.0.0",
-    "deep-sort-realtime>=1.3.2",
     "ffmpeg-python>=0.2.0",
 ]
 dev = [
