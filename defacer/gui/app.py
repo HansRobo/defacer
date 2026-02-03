@@ -5,15 +5,33 @@ import sys
 from pathlib import Path
 
 # OpenCVとPyQt5のQtプラグイン競合を回避
-# OpenCVのQtプラグインパスを無効化してPyQt5のものを使用
-os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-if "QT_PLUGIN_PATH" in os.environ:
-    # cv2のプラグインパスを除外
-    paths = os.environ["QT_PLUGIN_PATH"].split(os.pathsep)
-    paths = [p for p in paths if "cv2" not in p]
-    os.environ["QT_PLUGIN_PATH"] = os.pathsep.join(paths)
+# PyQt5を先にインポートしてプラグインパスを確立
+from PyQt5.QtCore import Qt, QCoreApplication
 
-from PyQt5.QtCore import Qt
+# cv2のQtプラグインパスを完全に除外
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
+os.environ.pop("QT_PLUGIN_PATH", None)
+
+# PyQt5のプラグインパスのみを使用
+import cv2
+cv2_dir = os.path.dirname(cv2.__file__)
+cv2_plugins = os.path.join(cv2_dir, "qt", "plugins")
+
+# cv2のpluginsディレクトリを無効化（PyQt5との競合を回避）
+if os.path.exists(cv2_plugins):
+    disabled_path = cv2_plugins + ".disabled"
+    if not os.path.exists(disabled_path):
+        try:
+            os.rename(cv2_plugins, disabled_path)
+        except (OSError, PermissionError):
+            # 権限エラーの場合は警告のみ
+            pass
+
+# QCoreApplicationのライブラリパスからcv2を除外
+current_paths = QCoreApplication.libraryPaths()
+filtered_paths = [p for p in current_paths if "cv2" not in p]
+QCoreApplication.setLibraryPaths(filtered_paths)
+
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,

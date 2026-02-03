@@ -16,11 +16,7 @@
 
 ```bash
 # グローバルインストール
-uv tool install --force -e ".[detection]"
-
-# opencv-pythonの競合を解決
-uv pip uninstall opencv-python --python ~/.local/share/uv/tools/defacer/bin/python
-uv pip install --force-reinstall opencv-python-headless --python ~/.local/share/uv/tools/defacer/bin/python
+uv tool install defacer
 
 # すぐに使用可能
 defacer gui
@@ -28,18 +24,57 @@ defacer gui
 
 ### 開発環境
 
+#### 自動インストールスクリプト（推奨）
+
+環境（CUDA/ROCm/CPU）を自動検出して適切な依存関係をインストールします：
+
 ```bash
-# 仮想環境を作成
-uv venv
+# リポジトリをクローン
+git clone https://github.com/yourusername/defacer.git
+cd defacer
 
-# 依存関係をインストール
-uv pip install -e ".[detection]"
+# 環境を自動検出してインストール
+./scripts/install.sh
 
-# opencv-pythonを削除（PyQt5との競合回避）
-uv pip uninstall opencv-python
-
-# 仮想環境を有効化して使用
+# 仮想環境を有効化
 source .venv/bin/activate
+
+# GUIを起動
+defacer gui
+```
+
+#### インストールスクリプトのオプション
+
+```bash
+# CUDA環境を明示的に指定
+./scripts/install.sh --cuda
+
+# ROCm環境を明示的に指定
+./scripts/install.sh --rocm
+
+# CPU環境を明示的に指定
+./scripts/install.sh --cpu
+
+# 開発依存関係も含める
+./scripts/install.sh --dev
+
+# 全オプション依存関係を含める
+./scripts/install.sh --all
+```
+
+#### 手動インストール
+
+```bash
+# リポジトリをクローン
+git clone https://github.com/yourusername/defacer.git
+cd defacer
+
+# 仮想環境を作成してインストール
+uv venv
+source .venv/bin/activate
+uv pip install -e .
+
+# GUIを起動
 defacer gui
 ```
 
@@ -101,14 +136,16 @@ defacer auto input.mp4 -o output.mp4 \
 
 ## オプション機能
 
+基本インストールにはRetinaFace顔検出が含まれています。以下のオプション機能を追加できます：
+
 ```bash
-# トラッキング機能を追加
-uv pip install deep-sort-realtime
+# YOLOv8顔検出を追加（RetinaFaceの代替）
+uv pip install -e ".[yolo]"
 
-# YOLO検出器を追加
-uv pip install ultralytics
+# トラッキング機能を追加（フレーム間の顔追跡）
+uv pip install -e ".[tracking]"
 
-# 全機能をインストール
+# 全オプション機能をインストール
 uv pip install -e ".[all]"
 ```
 
@@ -141,27 +178,31 @@ defacer/
 
 ### Qt platform plugin エラー
 
-opencv-pythonとPyQt5の競合です。opencv-python-headlessを使用してください。
+環境変数でプラットフォームを指定してください：
 
 ```bash
-uv pip uninstall opencv-python
-uv pip install opencv-python-headless
-```
-
-### RetinaFaceが動作しない
-
-tf-kerasが必要です。
-
-```bash
-uv pip install tf-keras
-```
-
-### Waylandでの起動
-
-```bash
-QT_QPA_PLATFORM=wayland defacer gui
-# または
+# X11で起動
 QT_QPA_PLATFORM=xcb defacer gui
+
+# Waylandで起動
+QT_QPA_PLATFORM=wayland defacer gui
+```
+
+### GPUが検出されない
+
+TensorFlowはCPUで動作します。GPUを使用する場合：
+
+1. **CUDA環境**: CUDAドライバーとcudnnをインストール後、`./scripts/install.sh --cuda`を実行
+2. **ROCm環境**: ROCmドライバーをインストール後、`./scripts/install.sh --rocm`を実行
+
+インストールスクリプトは環境に応じて適切なTensorFlow/PyTorchバージョンを自動選択します。
+
+### メモリ不足エラー
+
+大きな動画を処理する場合、フレームサンプリングを調整してください：
+
+```bash
+defacer auto input.mp4 -o output.mp4 --sample-rate 5
 ```
 
 ## ライセンス
@@ -170,11 +211,17 @@ MIT
 
 ## 依存関係
 
-- opencv-python-headless: 動画処理
-- PyQt5: GUI
+### 必須
+
+- opencv-python: 動画処理とGUI表示
+- PyQt5: GUIフレームワーク
 - numpy: 数値計算
 - tqdm: 進捗表示
-- retina-face: 顔検知（オプション）
-- deep-sort-realtime: トラッキング（オプション）
-- ultralytics: YOLOv8検出（オプション）
-- ffmpeg-python: 動画エンコード（オプション）
+- retina-face: RetinaFace顔検出
+- tf-keras: TensorFlowバックエンド
+
+### オプション
+
+- ultralytics: YOLOv8顔検出（RetinaFaceの代替）
+- deep-sort-realtime: DeepSORTトラッキング
+- ffmpeg-python: 高度な動画エンコード

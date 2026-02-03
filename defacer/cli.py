@@ -2,7 +2,9 @@
 
 # OpenCVとPyQt5のQtプラグイン競合を回避（他のインポートより先に実行）
 import os
+
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
+os.environ.pop("QT_PLUGIN_PATH", None)
 
 import argparse
 import sys
