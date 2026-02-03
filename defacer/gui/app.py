@@ -62,6 +62,7 @@ from defacer.gui.annotation import AnnotationStore
 from defacer.gui.export_dialog import ExportDialog
 from defacer.gui.detection_dialog import DetectionDialog
 from defacer.gui.track_editor import TrackEditorDialog
+from defacer.gui.retrack_dialog import RetrackDialog
 from defacer.tracking.interpolation import interpolate_track
 from defacer.detection import get_available_detectors
 
@@ -349,6 +350,11 @@ class MainWindow(QMainWindow):
         auto_detect_action.setShortcut("Ctrl+D")
         auto_detect_action.triggered.connect(self._run_auto_detection)
         edit_menu.addAction(auto_detect_action)
+
+        # 再トラッキング
+        retrack_action = QAction("既存アノテーションを再トラッキング(&R)...", self)
+        retrack_action.triggered.connect(self._run_retracking)
+        edit_menu.addAction(retrack_action)
 
         edit_menu.addSeparator()
 
@@ -867,6 +873,40 @@ class MainWindow(QMainWindow):
 
         self._on_annotations_changed()
         self._status_bar.showMessage(f"{len(new_store)}件の検出結果を追加しました")
+
+    def _run_retracking(self) -> None:
+        """既存アノテーションの再トラッキングを実行"""
+        if self._current_video_path is None:
+            QMessageBox.warning(
+                self,
+                "再トラッキング",
+                "動画ファイルを開いてください。",
+            )
+            return
+
+        if len(self._video_player.annotation_store) == 0:
+            QMessageBox.warning(
+                self,
+                "再トラッキング",
+                "アノテーションがありません。先にアノテーションを追加してください。",
+            )
+            return
+
+        dialog = RetrackDialog(
+            self,
+            self._current_video_path,
+            self._video_player.annotation_store,
+            self._video_player.frame_count,
+            self._video_player.current_frame_number,
+        )
+        dialog.retrack_completed.connect(self._on_retrack_completed)
+        dialog.exec_()
+
+    def _on_retrack_completed(self) -> None:
+        """再トラッキング完了時の処理"""
+        self._on_annotations_changed()
+        self._video_player.update()
+        self._status_bar.showMessage("再トラッキングが完了しました")
 
     def _export_video(self) -> None:
         """動画をエクスポート"""

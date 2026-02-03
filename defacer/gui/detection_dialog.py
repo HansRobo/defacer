@@ -30,6 +30,7 @@ class DetectionWorker(QThread):
 
     progress = pyqtSignal(int, int)  # (current, total)
     detection_found = pyqtSignal(int, list)  # (frame_number, detections)
+    tracking_result = pyqtSignal(int, list)  # (frame_number, list[TrackedFace])
     finished = pyqtSignal(bool, str, int)  # (success, message, detection_count)
 
     def __init__(
@@ -41,6 +42,9 @@ class DetectionWorker(QThread):
         end_frame: int,
         frame_skip: int,
         bbox_scale: float,
+        use_tracking: bool = True,
+        tracking_max_age: int = 30,
+        tracking_min_hits: int = 3,
     ):
         super().__init__()
         self.video_path = video_path
@@ -50,6 +54,9 @@ class DetectionWorker(QThread):
         self.end_frame = end_frame
         self.frame_skip = frame_skip
         self.bbox_scale = bbox_scale
+        self.use_tracking = use_tracking
+        self.tracking_max_age = tracking_max_age
+        self.tracking_min_hits = tracking_min_hits
         self._cancelled = False
 
     def cancel(self):
@@ -71,6 +78,22 @@ class DetectionWorker(QThread):
             self.finished.emit(False, f"動画の読み込みに失敗: {e}", 0)
             return
 
+        # トラッカー初期化
+        tracker = None
+        if self.use_tracking:
+            try:
+                from defacer.tracking import create_tracker
+                tracker = create_tracker(
+                    max_age=self.tracking_max_age,
+                    min_hits=self.tracking_min_hits
+                )
+            except Exception as e:
+                # GPU初期化失敗時は警告を出してトラッキングなしで続行
+                self.finished.emit(False, f"トラッカーの初期化に失敗（トラッキングなしで続行）: {e}", 0)
+                # 続行せずに終了する
+                reader.release()
+                return
+
         total_frames = self.end_frame - self.start_frame + 1
         frames_to_process = total_frames // (self.frame_skip + 1)
         detection_count = 0
@@ -86,9 +109,17 @@ class DetectionWorker(QThread):
                 if frame is None:
                     continue
 
+                # 検出を実行
                 detections = detector.detect(frame)
 
-                if detections:
+                # トラッキングを使用する場合
+                if tracker:
+                    tracked = tracker.update(detections, frame)
+                    if tracked:
+                        self.tracking_result.emit(frame_num, tracked)
+                        detection_count += len(tracked)
+                # トラッキングを使用しない場合（従来の動作）
+                elif detections:
                     self.detection_found.emit(frame_num, detections)
                     detection_count += len(detections)
 
@@ -179,6 +210,39 @@ class DetectionDialog(QDialog):
         detector_layout.addLayout(scale_layout)
 
         layout.addWidget(detector_group)
+
+        # トラッキング設定
+        tracking_group = QGroupBox("トラッキング設定")
+        tracking_layout = QVBoxLayout(tracking_group)
+
+        self._use_tracking = QCheckBox("DeepSORTトラッキングを使用")
+        self._use_tracking.setChecked(True)
+        self._use_tracking.setToolTip("同一人物に同じtrack_idを自動で割り当てます")
+        tracking_layout.addWidget(self._use_tracking)
+
+        # max_age設定
+        max_age_layout = QHBoxLayout()
+        max_age_layout.addWidget(QLabel("最大追跡フレーム数:"))
+        self._tracking_max_age = QSpinBox()
+        self._tracking_max_age.setRange(10, 100)
+        self._tracking_max_age.setValue(30)
+        self._tracking_max_age.setToolTip("顔が見えなくなってから何フレーム追跡を続けるか")
+        max_age_layout.addWidget(self._tracking_max_age)
+        max_age_layout.addStretch()
+        tracking_layout.addLayout(max_age_layout)
+
+        # min_hits設定
+        min_hits_layout = QHBoxLayout()
+        min_hits_layout.addWidget(QLabel("確定までの検出回数:"))
+        self._tracking_min_hits = QSpinBox()
+        self._tracking_min_hits.setRange(1, 10)
+        self._tracking_min_hits.setValue(3)
+        self._tracking_min_hits.setToolTip("トラックを確定するまでに必要な連続検出回数")
+        min_hits_layout.addWidget(self._tracking_min_hits)
+        min_hits_layout.addStretch()
+        tracking_layout.addLayout(min_hits_layout)
+
+        layout.addWidget(tracking_group)
 
         # 範囲設定
         range_group = QGroupBox("検出範囲")
@@ -297,9 +361,13 @@ class DetectionDialog(QDialog):
             end_frame,
             self._frame_skip.value(),
             self._bbox_scale.value() / 100.0,
+            use_tracking=self._use_tracking.isChecked(),
+            tracking_max_age=self._tracking_max_age.value(),
+            tracking_min_hits=self._tracking_min_hits.value(),
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.detection_found.connect(self._on_detection_found)
+        self._worker.tracking_result.connect(self._on_tracking_result)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
 
@@ -308,8 +376,7 @@ class DetectionDialog(QDialog):
         self._progress_bar.setValue(current)
 
     def _on_detection_found(self, frame_number, detections):
-        """検出結果を受け取る"""
-        h, w = 1080, 1920  # デフォルト、実際には動画サイズを使用
+        """検出結果を受け取る（トラッキング無効時）"""
         bbox_scale = self._bbox_scale.value() / 100.0
 
         for det in detections:
@@ -334,6 +401,32 @@ class DetectionDialog(QDialog):
             )
             self._temp_store.add(ann, save_undo=False)
             self._next_track_id += 1
+
+    def _on_tracking_result(self, frame_number, tracked_faces):
+        """トラッキング結果を受け取る（トラッキング有効時）"""
+        bbox_scale = self._bbox_scale.value() / 100.0
+
+        for t in tracked_faces:
+            # バウンディングボックスを拡大
+            x1, y1, x2, y2 = t.bbox
+            if bbox_scale != 1.0:
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                new_w = int((x2 - x1) * bbox_scale)
+                new_h = int((y2 - y1) * bbox_scale)
+                x1 = max(0, cx - new_w // 2)
+                y1 = max(0, cy - new_h // 2)
+                x2 = cx + new_w // 2
+                y2 = cy + new_h // 2
+
+            ann = Annotation(
+                frame=frame_number,
+                bbox=BoundingBox(x1, y1, x2, y2),
+                track_id=t.track_id,  # DeepSORTが割り当てたID
+                is_manual=False,
+                confidence=t.confidence,
+            )
+            self._temp_store.add(ann, save_undo=False)
 
     def _on_finished(self, success, message, detection_count):
         self._detect_btn.setEnabled(True)
