@@ -11,12 +11,68 @@ from PyQt5.QtGui import (
     QCursor,
     QFont,
 )
-from PyQt5.QtWidgets import QLabel, QSizePolicy
+from PyQt5.QtWidgets import QLabel, QSizePolicy, QWidget, QHBoxLayout, QToolButton
 
 import numpy as np
 
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import BoundingBox, Annotation, AnnotationStore
+
+
+class AnnotationToolbar(QWidget):
+    """アノテーション選択時に表示されるフローティングツールバー"""
+
+    delete_clicked = pyqtSignal()
+    delete_track_clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # レイアウト設定
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+
+        # 削除ボタン
+        self.delete_btn = QToolButton(self)
+        self.delete_btn.setText("🗑")
+        self.delete_btn.setToolTip("このアノテーションを削除")
+        self.delete_btn.clicked.connect(self.delete_clicked.emit)
+        layout.addWidget(self.delete_btn)
+
+        # トラック削除ボタン
+        self.delete_track_btn = QToolButton(self)
+        self.delete_track_btn.setText("⊗")
+        self.delete_track_btn.setToolTip("このトラックの全アノテーションを削除")
+        self.delete_track_btn.clicked.connect(self.delete_track_clicked.emit)
+        layout.addWidget(self.delete_track_btn)
+
+        # ダークテーマスタイル
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgba(40, 40, 40, 220);
+                border: 1px solid rgba(100, 100, 100, 200);
+                border-radius: 4px;
+            }
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                color: white;
+                font-size: 16px;
+                padding: 4px 8px;
+                min-width: 24px;
+                min-height: 24px;
+            }
+            QToolButton:hover {
+                background-color: rgba(80, 80, 80, 150);
+                border-radius: 2px;
+            }
+            QToolButton:pressed {
+                background-color: rgba(100, 100, 100, 150);
+            }
+        """)
+
+        self.hide()
 
 
 class VideoPlayerWidget(QLabel):
@@ -26,7 +82,7 @@ class VideoPlayerWidget(QLabel):
     playback_state_changed = pyqtSignal(bool)  # 再生状態が変わった時
     annotation_added = pyqtSignal(object)  # アノテーションが追加された時
     annotation_selected = pyqtSignal(object)  # アノテーションが選択された時
-    annotations_changed = pyqtSignal()  # アノテーションが変更された時
+    annotations_changed = pyqtSignal(bool)  # アノテーションが変更された時 (引数: トラック構造変更か)
 
     # 編集モード
     MODE_VIEW = "view"
@@ -65,11 +121,17 @@ class VideoPlayerWidget(QLabel):
         self._resize_handle: str | None = None
         self._drag_start: tuple[int, int] | None = None
         self._drag_offset: tuple[int, int] = (0, 0)
+        self._is_nudging: bool = False  # キーボード微調整中フラグ
 
         # 画像のスケールとオフセット（座標変換用）
         self._scale = 1.0
         self._offset_x = 0
         self._offset_y = 0
+
+        # フローティングツールバー
+        self._toolbar = AnnotationToolbar(self)
+        self._toolbar.delete_clicked.connect(self._delete_current_annotation)
+        self._toolbar.delete_track_clicked.connect(self._delete_current_track)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -91,6 +153,9 @@ class VideoPlayerWidget(QLabel):
         if mode == self.MODE_VIEW:
             self._selected_annotation = None
             self._selected_index = -1
+            self._hide_toolbar()
+        elif mode != self.MODE_EDIT:
+            self._hide_toolbar()
         self._update_display()
 
     def set_auto_interpolate(self, enabled: bool) -> None:
@@ -132,6 +197,7 @@ class VideoPlayerWidget(QLabel):
         # 選択を解除（フレームが変わったら）
         self._selected_annotation = None
         self._selected_index = -1
+        self._hide_toolbar()
 
         self._update_display()
         self.frame_changed.emit(frame_number)
@@ -182,6 +248,10 @@ class VideoPlayerWidget(QLabel):
 
         painter.end()
         self.setPixmap(scaled_pixmap)
+
+        # ツールバー位置を更新
+        if self._toolbar.isVisible():
+            self._update_toolbar_position()
 
     def _get_track_color(self, track_id: int | None) -> tuple[int, int, int]:
         """トラックIDに基づいて色を生成（HSVベース）"""
@@ -383,12 +453,14 @@ class VideoPlayerWidget(QLabel):
                 self._drag_offset = (x - ann.bbox.x1, y - ann.bbox.y1)
                 self.annotation_selected.emit(ann)
                 self._update_display()
+                self._show_toolbar()
                 return
 
             # 何もない場所をクリック→選択解除
             self._selected_annotation = None
             self._selected_index = -1
             self.annotation_selected.emit(None)
+            self._hide_toolbar()
             self._update_display()
 
         elif self._edit_mode == self.MODE_DRAW:
@@ -458,7 +530,7 @@ class VideoPlayerWidget(QLabel):
                 )
                 self._annotation_store.add(ann)
                 self.annotation_added.emit(ann)
-                self.annotations_changed.emit()
+                self.annotations_changed.emit(True)  # 構造変更
 
             self._drawing_rect = None
             self._is_drawing = False
@@ -467,8 +539,8 @@ class VideoPlayerWidget(QLabel):
 
         elif self._edit_mode == self.MODE_EDIT:
             if self._resize_handle or self._drag_start:
-                # 編集完了、Undoスタックに保存
-                self.annotations_changed.emit()
+                # 編集完了（位置変更のみ、トラック構造は不変）
+                self.annotations_changed.emit(False)
 
             self._resize_handle = None
             self._drag_start = None
@@ -523,15 +595,185 @@ class VideoPlayerWidget(QLabel):
 
     def keyPressEvent(self, event) -> None:
         """キー入力"""
-        if event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace:
+        key = event.key()
+        modifiers = event.modifiers()
+
+        # 削除キー
+        if key in (Qt.Key_Delete, Qt.Key_Backspace):
             if self._selected_annotation:
                 self._annotation_store.remove_annotation(self._selected_annotation)
                 self._selected_annotation = None
                 self._selected_index = -1
-                self.annotations_changed.emit()
+                self._hide_toolbar()
+                self.annotations_changed.emit(True)  # 構造変更
                 self._update_display()
+            return
+
+        # 矢印キーによる微調整（EDIT モードかつ選択中のみ）
+        if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if self._selected_annotation and self._edit_mode == self.MODE_EDIT:
+                # 最初のキー押下時のみフラグをセット
+                if not event.isAutoRepeat():
+                    self._is_nudging = True
+                self._nudge_annotation(key, modifiers)
+                return
+
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        """キー解放"""
+        # オートリピート無視
+        if event.isAutoRepeat():
+            return
+
+        key = event.key()
+
+        # 矢印キー解放時に変更を確定
+        if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if self._is_nudging:
+                self._is_nudging = False
+                self.annotations_changed.emit(False)  # 位置変更のみ
+            return
+
+        super().keyReleaseEvent(event)
+
+    def _nudge_annotation(self, key: int, modifiers) -> None:
+        """矢印キーでアノテーションを微調整（表示更新のみ、変更通知はkeyReleaseで）"""
+        if not self._selected_annotation or not self._reader:
+            return
+
+        bbox = self._selected_annotation.bbox
+        is_shift = modifiers & Qt.ShiftModifier
+        is_ctrl = modifiers & Qt.ControlModifier
+
+        # 移動量
+        step = 10 if is_ctrl else 1
+
+        if is_shift:
+            # Shift: 右下角をリサイズ
+            new_x1, new_y1, new_x2, new_y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+
+            if key == Qt.Key_Up:
+                new_y2 -= step
+            elif key == Qt.Key_Down:
+                new_y2 += step
+            elif key == Qt.Key_Left:
+                new_x2 -= step
+            elif key == Qt.Key_Right:
+                new_x2 += step
+
+            new_bbox = BoundingBox(new_x1, new_y1, new_x2, new_y2).normalize()
+            if new_bbox.width > 10 and new_bbox.height > 10:
+                self._selected_annotation.bbox = new_bbox.clamp(
+                    self._reader.width, self._reader.height
+                )
         else:
-            super().keyPressEvent(event)
+            # 通常: 移動
+            dx, dy = 0, 0
+
+            if key == Qt.Key_Up:
+                dy = -step
+            elif key == Qt.Key_Down:
+                dy = step
+            elif key == Qt.Key_Left:
+                dx = -step
+            elif key == Qt.Key_Right:
+                dx = step
+
+            new_bbox = BoundingBox(
+                bbox.x1 + dx, bbox.y1 + dy, bbox.x2 + dx, bbox.y2 + dy
+            ).clamp(self._reader.width, self._reader.height)
+
+            self._selected_annotation.bbox = new_bbox
+
+        # 表示更新のみ（変更通知はキーリリース時）
+        self._update_display()
+
+    def _show_toolbar(self) -> None:
+        """ツールバーを表示"""
+        if not self._selected_annotation or self._edit_mode != self.MODE_EDIT:
+            return
+
+        self._update_toolbar_position()
+        self._toolbar.show()
+
+    def _hide_toolbar(self) -> None:
+        """ツールバーを非表示"""
+        self._toolbar.hide()
+
+    def _update_toolbar_position(self) -> None:
+        """ツールバーの位置を更新"""
+        if not self._selected_annotation:
+            return
+
+        bbox = self._selected_annotation.bbox
+
+        # アノテーションの右上（スケール変換 + オフセット）
+        x = int(bbox.x2 * self._scale) + self._offset_x + 8
+        y = int(bbox.y1 * self._scale) + self._offset_y
+
+        toolbar_width = self._toolbar.sizeHint().width()
+        toolbar_height = self._toolbar.sizeHint().height()
+
+        # 画面端調整（右端）
+        if x + toolbar_width > self.width():
+            x = int(bbox.x1 * self._scale) + self._offset_x - toolbar_width - 8
+
+        # 画面端調整（上端）
+        if y < 0:
+            y = int(bbox.y2 * self._scale) + self._offset_y + 8
+
+        # 画面端調整（下端）
+        if y + toolbar_height > self.height():
+            y = self.height() - toolbar_height
+
+        self._toolbar.move(x, y)
+
+    def _delete_current_annotation(self) -> None:
+        """選択中のアノテーションを削除"""
+        if self._selected_annotation:
+            self._annotation_store.remove_annotation(self._selected_annotation)
+            self._selected_annotation = None
+            self._selected_index = -1
+            self._hide_toolbar()
+            self.annotations_changed.emit(True)  # 構造変更
+            self._update_display()
+
+    def _delete_current_track(self) -> None:
+        """選択中のアノテーションのトラック全体を削除"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        if not self._selected_annotation or self._selected_annotation.track_id is None:
+            return
+
+        track_id = self._selected_annotation.track_id
+        track_info = self._annotation_store.get_track_info(track_id)
+
+        if not track_info.get("exists"):
+            return
+
+        # 確認ダイアログ
+        reply = QMessageBox.question(
+            self,
+            "トラック削除の確認",
+            f"トラック #{track_id} の全アノテーション（{track_info['annotation_count']}個）を削除しますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply == QMessageBox.Yes:
+            count = self._annotation_store.remove_track(track_id)
+            self._selected_annotation = None
+            self._selected_index = -1
+            self._hide_toolbar()
+            self.annotations_changed.emit(True)  # 構造変更
+            self._update_display()
+
+            QMessageBox.information(
+                self,
+                "トラック削除",
+                f"トラック #{track_id} の全アノテーション（{count}個）を削除しました。",
+            )
 
     def delete_selected_annotation(self) -> bool:
         """選択中のアノテーションを削除"""
@@ -539,7 +781,8 @@ class VideoPlayerWidget(QLabel):
             self._annotation_store.remove_annotation(self._selected_annotation)
             self._selected_annotation = None
             self._selected_index = -1
-            self.annotations_changed.emit()
+            self._hide_toolbar()
+            self.annotations_changed.emit(True)  # 構造変更
             self._update_display()
             return True
         return False
@@ -583,7 +826,7 @@ class VideoPlayerWidget(QLabel):
             )
             self._annotation_store.add(new_ann)
 
-        self.annotations_changed.emit()
+        self.annotations_changed.emit(True)  # 構造変更
         # 次のフレームに移動
         self.seek(next_frame)
         return True
@@ -697,7 +940,7 @@ class VideoPlayerWidget(QLabel):
         self._annotation_store.interpolate_frames(
             track_id, start_frame, end_frame, save_undo=False
         )
-        self.annotations_changed.emit()
+        self.annotations_changed.emit(True)  # 構造変更
 
     @property
     def is_playing(self) -> bool:
@@ -741,6 +984,8 @@ class VideoPlayerWidget(QLabel):
         super().resizeEvent(event)
         if self._current_frame is not None:
             self._update_display()
+        if self._toolbar.isVisible():
+            self._update_toolbar_position()
 
     def _show_merge_dialog(self, annotation: Annotation) -> None:
         """トラック統合ダイアログを表示"""
@@ -803,7 +1048,7 @@ class VideoPlayerWidget(QLabel):
         # トラック統合を実行
         count = self._annotation_store.merge_tracks(source_track_id, target_track_id)
 
-        self.annotations_changed.emit()
+        self.annotations_changed.emit(True)  # 構造変更
         self._update_display()
 
         # 完了メッセージ
@@ -843,7 +1088,7 @@ class VideoPlayerWidget(QLabel):
     def _delete_annotation_at_point(self, annotation: Annotation) -> None:
         """指定のアノテーションを削除"""
         self._annotation_store.remove_annotation(annotation)
-        self.annotations_changed.emit()
+        self.annotations_changed.emit(True)  # 構造変更
         self._update_display()
 
     def release(self) -> None:

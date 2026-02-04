@@ -699,12 +699,21 @@ class MainWindow(QMainWindow):
         self._timeline.set_frame(frame_number)
         self._update_annotation_info()
 
-    def _on_annotations_changed(self) -> None:
-        """アノテーションが変更された時"""
+    def _on_annotations_changed(self, track_structure_changed: bool = True) -> None:
+        """アノテーションが変更された時
+
+        Args:
+            track_structure_changed: トラック構造が変更されたか（追加/削除/統合）
+                                     False の場合は位置変更のみなのでトラック一覧更新をスキップ
+        """
         self._unsaved_changes = True
         self._save_action.setEnabled(True)
         self._update_annotation_info()
-        self._update_track_list()
+
+        # トラック構造が変わった場合のみトラック一覧を更新（O(n)操作）
+        if track_structure_changed:
+            self._update_track_list()
+
         self._update_window_title()
 
     def _on_annotation_selected(self, annotation) -> None:
@@ -724,13 +733,15 @@ class MainWindow(QMainWindow):
 
     def _delete_selected(self) -> None:
         """選択中のアノテーションを削除"""
-        if self._video_player.delete_selected_annotation():
-            self._on_annotations_changed()
+        # video_player.delete_selected_annotation() が annotations_changed を emit するので
+        # ここでは追加の呼び出しは不要
+        self._video_player.delete_selected_annotation()
 
     def _copy_to_next_frame(self) -> None:
         """選択中のアノテーションを次のフレームにコピー"""
-        if self._video_player.copy_to_next_frame():
-            self._on_annotations_changed()
+        # video_player.copy_to_next_frame() が annotations_changed を emit するので
+        # ここでは追加の呼び出しは不要
+        self._video_player.copy_to_next_frame()
 
     def _interpolate_selected(self) -> None:
         """選択中のトラックを補間"""
@@ -754,41 +765,82 @@ class MainWindow(QMainWindow):
         status = "有効" if enabled else "無効"
         self._status_bar.showMessage(f"自動補間モード: {status}")
 
+    def _update_progress(self, current: int, total: int) -> None:
+        """進捗バーを更新"""
+        if total > 100:  # 少量なら表示しない
+            self._status_progress_bar.setVisible(True)
+            self._status_progress_bar.setMaximum(total)
+            self._status_progress_bar.setValue(current)
+            QApplication.processEvents()  # UIを更新
+
     def _update_track_list(self) -> None:
         """トラック一覧を更新"""
         store = self._video_player.annotation_store
-        track_ids = sorted(store.get_all_track_ids())
 
-        # テーブル更新中はUI更新を無効化して高速化
-        self._track_table.setUpdatesEnabled(False)
-        self._track_table.blockSignals(True)
+        # プログレスバーを設定
+        store.progress_callback = self._update_progress
 
         try:
-            self._track_table.setRowCount(len(track_ids))
+            # 一括でトラック情報を計算（O(n) で1回だけ）
+            total_annotations = len(store)
+            if total_annotations > 100:
+                self._status_bar.showMessage("トラック一覧を更新中...")
 
-            for row, track_id in enumerate(track_ids):
-                info = store.get_track_info(track_id)
+            track_stats = {}
+            for idx, ann in enumerate(store):
+                # 進捗表示（100件ごと）
+                if total_annotations > 100 and idx % 100 == 0:
+                    self._update_progress(idx, total_annotations)
 
-                # トラックID
-                id_item = QTableWidgetItem(f"#{track_id}")
-                id_item.setData(Qt.UserRole, track_id)
-                self._track_table.setItem(row, 0, id_item)
+                tid = ann.track_id
+                if tid is None:
+                    continue
+                if tid not in track_stats:
+                    track_stats[tid] = {"frames": [], "count": 0}
+                track_stats[tid]["frames"].append(ann.frame)
+                track_stats[tid]["count"] += 1
 
-                # フレーム範囲
-                frame_range = f"{info['frame_min']}-{info['frame_max']}"
-                range_item = QTableWidgetItem(frame_range)
-                self._track_table.setItem(row, 1, range_item)
+            # 完了通知
+            if total_annotations > 100:
+                self._update_progress(total_annotations, total_annotations)
 
-                # アノテーション数
-                count_item = QTableWidgetItem(str(info['annotation_count']))
-                self._track_table.setItem(row, 2, count_item)
+            # テーブル更新中はUI更新を無効化して高速化
+            self._track_table.setUpdatesEnabled(False)
+            self._track_table.blockSignals(True)
+
+            try:
+                self._track_table.setRowCount(len(track_stats))
+
+                for row, (track_id, stats) in enumerate(sorted(track_stats.items())):
+                    # トラックID
+                    id_item = QTableWidgetItem(f"#{track_id}")
+                    id_item.setData(Qt.UserRole, track_id)
+                    self._track_table.setItem(row, 0, id_item)
+
+                    # フレーム範囲
+                    frame_min = min(stats["frames"])
+                    frame_max = max(stats["frames"])
+                    frame_range = f"{frame_min}-{frame_max}"
+                    range_item = QTableWidgetItem(frame_range)
+                    self._track_table.setItem(row, 1, range_item)
+
+                    # アノテーション数
+                    count_item = QTableWidgetItem(str(stats["count"]))
+                    self._track_table.setItem(row, 2, count_item)
+            finally:
+                # UI更新を再有効化
+                self._track_table.blockSignals(False)
+                self._track_table.setUpdatesEnabled(True)
+
+            # 選択状態に応じてボタンを有効化
+            self._track_table.itemSelectionChanged.connect(self._on_track_selection_changed)
+
         finally:
-            # UI更新を再有効化
-            self._track_table.blockSignals(False)
-            self._track_table.setUpdatesEnabled(True)
-
-        # 選択状態に応じてボタンを有効化
-        self._track_table.itemSelectionChanged.connect(self._on_track_selection_changed)
+            # プログレスバーをクリア
+            store.progress_callback = None
+            self._status_progress_bar.setVisible(False)
+            if total_annotations > 100:
+                self._status_bar.showMessage("トラック一覧の更新完了")
 
     def _on_track_selection_changed(self) -> None:
         """トラック選択が変更された時"""
@@ -856,8 +908,8 @@ class MainWindow(QMainWindow):
         # トラック統合を実行
         count = store.merge_tracks(source_track_id, target_track_id)
 
+        # _on_annotations_changed(True) が _update_track_list() を呼ぶので追加呼び出しは不要
         self._on_annotations_changed()
-        self._update_track_list()
 
         self._status_bar.showMessage(
             f"トラック #{source_track_id} → #{target_track_id} を統合しました ({count}個のアノテーション)"
@@ -1154,13 +1206,13 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "Defacerについて",
-            "Defacer v0.3.1\n\n"
+            "Defacer v0.3.2\n\n"
             "動画内の顔を自動検知してモザイク処理を行うソフトウェア\n\n"
             "検知漏れがある場合は手動で顔領域を指定できます。\n\n"
-            "v0.3.1の新機能:\n"
-            "- トラック編集モードの状態管理改善\n"
-            "- 統合・再マッチング後のUI更新を完全に\n"
-            "- サムネイルキャッシュと選択状態の適切なクリア",
+            "v0.3.2の新機能:\n"
+            "- アノテーション削除処理を O(n) から O(1) に最適化（参照カウント方式）\n"
+            "- 位置編集時の無駄なトラック一覧更新を削減\n"
+            "- 大量データ処理時に進捗バーを表示",
         )
 
     def _show_shortcuts(self) -> None:

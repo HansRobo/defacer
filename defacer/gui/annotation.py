@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Callable
 
 
 @dataclass
@@ -135,6 +135,38 @@ class AnnotationStore:
     _undo_stack: list[dict] = field(default_factory=list)
     _redo_stack: list[dict] = field(default_factory=list)
 
+    # パフォーマンス最適化用キャッシュ
+    _total_count: int = 0
+    _track_ids: set[int] = field(default_factory=set)
+    _track_count: dict[int, int] = field(default_factory=dict)  # track_id → アノテーション数
+
+    # 進捗通知コールバック
+    progress_callback: Callable[[int, int], None] | None = None
+
+    def _rebuild_cache(self) -> None:
+        """キャッシュを再構築"""
+        self._total_count = 0
+        self._track_ids.clear()
+        self._track_count.clear()
+
+        frames = list(self.annotations.items())
+        total = len(frames)
+
+        for i, (_, anns) in enumerate(frames):
+            # 進捗通知（100フレームごと）
+            if self.progress_callback and total > 100 and i % 100 == 0:
+                self.progress_callback(i, total)
+
+            self._total_count += len(anns)
+            for ann in anns:
+                if ann.track_id is not None:
+                    self._track_ids.add(ann.track_id)
+                    self._track_count[ann.track_id] = self._track_count.get(ann.track_id, 0) + 1
+
+        # 完了通知
+        if self.progress_callback and total > 100:
+            self.progress_callback(total, total)
+
     def add(self, annotation: Annotation, save_undo: bool = True) -> None:
         """アノテーションを追加"""
         if save_undo:
@@ -144,6 +176,12 @@ class AnnotationStore:
         if frame not in self.annotations:
             self.annotations[frame] = []
         self.annotations[frame].append(annotation)
+
+        # キャッシュ更新
+        self._total_count += 1
+        if annotation.track_id is not None:
+            self._track_ids.add(annotation.track_id)
+            self._track_count[annotation.track_id] = self._track_count.get(annotation.track_id, 0) + 1
 
     def remove(self, frame: int, index: int, save_undo: bool = True) -> Annotation | None:
         """アノテーションを削除"""
@@ -158,6 +196,20 @@ class AnnotationStore:
         removed = self.annotations[frame].pop(index)
         if not self.annotations[frame]:
             del self.annotations[frame]
+
+        # キャッシュ更新
+        self._total_count -= 1
+        # 参照カウント方式で O(1) 削除
+        if removed.track_id is not None:
+            count = self._track_count.get(removed.track_id, 0)
+            if count <= 1:
+                # 最後の1個なので削除
+                self._track_ids.discard(removed.track_id)
+                self._track_count.pop(removed.track_id, None)
+            else:
+                # まだ残っているので減らす
+                self._track_count[removed.track_id] = count - 1
+
         return removed
 
     def remove_annotation(self, annotation: Annotation, save_undo: bool = True) -> bool:
@@ -198,11 +250,7 @@ class AnnotationStore:
 
     def get_all_track_ids(self) -> set[int]:
         """すべてのトラックIDを取得（None除く）"""
-        track_ids = set()
-        for ann in self:
-            if ann.track_id is not None:
-                track_ids.add(ann.track_id)
-        return track_ids
+        return self._track_ids.copy()
 
     def get_track_info(self, track_id: int) -> dict:
         """トラックの情報を取得（フレーム範囲、アノテーション数）"""
@@ -223,6 +271,50 @@ class AnnotationStore:
             "frame_count": len(set(frames)),
             "annotation_count": count,
         }
+
+    def remove_track(self, track_id: int, save_undo: bool = True) -> int:
+        """
+        指定トラックIDのアノテーションを全削除
+
+        Args:
+            track_id: 削除対象のトラックID
+            save_undo: Undoスタックに保存するか
+
+        Returns:
+            削除されたアノテーション数
+        """
+        if save_undo:
+            self._save_undo_state()
+
+        frames = list(self.annotations.items())
+        total = len(frames)
+        count = 0
+
+        for i, (frame, anns) in enumerate(frames):
+            # 進捗通知（100フレームごと）
+            if self.progress_callback and total > 100 and i % 100 == 0:
+                self.progress_callback(i, total)
+
+            to_remove = [j for j, ann in enumerate(anns) if ann.track_id == track_id]
+            # 逆順で削除（インデックスがずれないように）
+            for j in reversed(to_remove):
+                anns.pop(j)
+                count += 1
+
+            # 空になったフレームを削除
+            if not anns:
+                del self.annotations[frame]
+
+        # 完了通知
+        if self.progress_callback and total > 100:
+            self.progress_callback(total, total)
+
+        # キャッシュ更新
+        self._total_count -= count
+        self._track_ids.discard(track_id)
+        self._track_count.pop(track_id, None)
+
+        return count
 
     def merge_tracks(
         self,
@@ -247,12 +339,29 @@ class AnnotationStore:
         if save_undo:
             self._save_undo_state()
 
+        frames = list(self.annotations.items())
+        total = len(frames)
         count = 0
-        for frame, anns in self.annotations.items():
+
+        for i, (frame, anns) in enumerate(frames):
+            # 進捗通知（100フレームごと）
+            if self.progress_callback and total > 100 and i % 100 == 0:
+                self.progress_callback(i, total)
+
             for ann in anns:
                 if ann.track_id == source_track_id:
                     ann.track_id = target_track_id
                     count += 1
+
+        # 完了通知
+        if self.progress_callback and total > 100:
+            self.progress_callback(total, total)
+
+        # キャッシュ更新（参照カウント移動）
+        source_count = self._track_count.pop(source_track_id, 0)
+        self._track_ids.discard(source_track_id)
+        self._track_ids.add(target_track_id)
+        self._track_count[target_track_id] = self._track_count.get(target_track_id, 0) + source_count
 
         return count
 
@@ -318,6 +427,11 @@ class AnnotationStore:
             self._save_undo_state()
         self.annotations.clear()
 
+        # キャッシュリセット
+        self._total_count = 0
+        self._track_ids.clear()
+        self._track_count.clear()
+
     def _save_undo_state(self) -> None:
         """現在の状態をUndoスタックに保存"""
         state = self.to_dict()
@@ -361,6 +475,9 @@ class AnnotationStore:
             self.annotations[frame] = [Annotation.from_dict(a) for a in annotations]
         self._next_track_id = state.get("next_track_id", 1)
 
+        # キャッシュ再構築
+        self._rebuild_cache()
+
     def to_dict(self) -> dict:
         """JSON用の辞書に変換"""
         return {
@@ -379,6 +496,10 @@ class AnnotationStore:
             frame = int(frame_str)
             store.annotations[frame] = [Annotation.from_dict(a) for a in annotations]
         store._next_track_id = data.get("next_track_id", 1)
+
+        # キャッシュ初期化
+        store._rebuild_cache()
+
         return store
 
     def save(self, path: Path | str) -> None:
@@ -396,7 +517,7 @@ class AnnotationStore:
         return cls.from_dict(data)
 
     def __len__(self) -> int:
-        return sum(len(anns) for anns in self.annotations.values())
+        return self._total_count
 
     def __iter__(self) -> Iterator[Annotation]:
         for frame in sorted(self.annotations.keys()):
