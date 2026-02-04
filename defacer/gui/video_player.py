@@ -275,6 +275,7 @@ class VideoPlayerWidget(QLabel):
     annotation_added = pyqtSignal(object)  # アノテーションが追加された時
     annotation_selected = pyqtSignal(object)  # アノテーションが選択された時
     annotations_changed = pyqtSignal(bool)  # アノテーションが変更された時 (引数: トラック構造変更か)
+    status_message = pyqtSignal(str, int)  # ステータスメッセージ (message, timeout_ms)
 
     # 編集モード
     MODE_VIEW = "view"
@@ -1172,11 +1173,7 @@ class VideoPlayerWidget(QLabel):
         available_tracks = [t for t in available_tracks if t != source_track_id]
 
         if not available_tracks:
-            QMessageBox.warning(
-                self,
-                "トラック統合",
-                "統合先のトラックが存在しません。",
-            )
+            self.status_message.emit("統合先のトラックが存在しません", 5000)
             return
 
         # トラック選択ダイアログ
@@ -1224,11 +1221,9 @@ class VideoPlayerWidget(QLabel):
         self._update_display()
 
         # 完了メッセージ
-        QMessageBox.information(
-            self,
-            "トラック統合",
-            f"トラック {source_track_id} を {target_track_id} に統合しました\n"
-            f"({count}個のアノテーションを更新)",
+        self.status_message.emit(
+            f"トラック {source_track_id} を {target_track_id} に統合しました ({count}個のアノテーションを更新)",
+            5000
         )
 
     def _check_track_conflicts(
@@ -1292,10 +1287,9 @@ class VideoPlayerWidget(QLabel):
             self.annotations_changed.emit(True)  # 構造変更
             self._update_display()
 
-            QMessageBox.information(
-                self,
-                "トラック削除",
-                f"トラック #{track_id} の全アノテーション（{count}個）を削除しました。",
+            self.status_message.emit(
+                f"トラック #{track_id} の全アノテーション（{count}個）を削除しました",
+                5000
             )
 
     def _start_merge_search_for_annotation(self, annotation: Annotation) -> None:
@@ -1475,12 +1469,10 @@ class VideoPlayerWidget(QLabel):
         self.annotations_changed.emit(True)
 
         # 完了メッセージ
-        from PyQt5.QtWidgets import QMessageBox
         track_ids_str = ", ".join([f"#{tid}" for tid in candidate.track_ids])
-        QMessageBox.information(
-            self,
-            "トラック統合",
-            f"トラック {track_ids_str} を統合しました。",
+        self.status_message.emit(
+            f"トラック {track_ids_str} を統合しました",
+            5000
         )
 
     def _cancel_merge_mode(self) -> None:
@@ -1494,11 +1486,9 @@ class VideoPlayerWidget(QLabel):
 
     def _show_no_candidates_toast(self) -> None:
         """候補なしのメッセージを表示"""
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.information(
-            self,
-            "統合候補なし",
-            "選択中のトラックに統合候補が見つかりませんでした。",
+        self.status_message.emit(
+            "選択中のトラックに統合候補が見つかりませんでした",
+            5000
         )
 
     def _draw_merge_overlay(self, painter: QPainter) -> None:

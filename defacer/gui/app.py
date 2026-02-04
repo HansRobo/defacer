@@ -182,6 +182,9 @@ class MainWindow(QMainWindow):
         self._video_player.playback_state_changed.connect(self._timeline.set_playing)
         self._video_player.annotations_changed.connect(self._on_annotations_changed)
         self._video_player.annotation_selected.connect(self._on_annotation_selected)
+        self._video_player.status_message.connect(
+            lambda msg, timeout: self._status_bar.showMessage(msg, timeout)
+        )
 
         self._timeline.frame_changed.connect(self._video_player.seek)
         self._timeline.play_clicked.connect(self._video_player.play)
@@ -701,11 +704,7 @@ class MainWindow(QMainWindow):
     def _run_auto_detection(self) -> None:
         """自動顔検出を実行"""
         if self._current_video_path is None:
-            QMessageBox.warning(
-                self,
-                "自動検出",
-                "動画ファイルを開いてください。",
-            )
+            self._status_bar.showMessage("動画ファイルを開いてください", 5000)
             return
 
         dialog = DetectionDialog(
@@ -760,19 +759,11 @@ class MainWindow(QMainWindow):
     def _run_retracking(self) -> None:
         """既存アノテーションの再トラッキングを実行"""
         if self._current_video_path is None:
-            QMessageBox.warning(
-                self,
-                "再トラッキング",
-                "動画ファイルを開いてください。",
-            )
+            self._status_bar.showMessage("動画ファイルを開いてください", 5000)
             return
 
         if len(self._video_player.annotation_store) == 0:
-            QMessageBox.warning(
-                self,
-                "再トラッキング",
-                "アノテーションがありません。先にアノテーションを追加してください。",
-            )
+            self._status_bar.showMessage("アノテーションがありません。先にアノテーションを追加してください", 5000)
             return
 
         dialog = RetrackDialog(
@@ -794,11 +785,7 @@ class MainWindow(QMainWindow):
     def _export_video(self) -> None:
         """動画をエクスポート"""
         if self._current_video_path is None:
-            QMessageBox.warning(
-                self,
-                "エクスポート",
-                "動画ファイルを開いてください。",
-            )
+            self._status_bar.showMessage("動画ファイルを開いてください", 5000)
             return
 
         if len(self._video_player.annotation_store) == 0:
