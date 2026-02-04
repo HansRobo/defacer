@@ -1,5 +1,6 @@
 """動画プレーヤーウィジェット"""
 
+from dataclasses import dataclass, field
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import (
     QImage,
@@ -11,7 +12,7 @@ from PyQt5.QtGui import (
     QCursor,
     QFont,
 )
-from PyQt5.QtWidgets import QLabel, QSizePolicy, QWidget, QHBoxLayout, QToolButton
+from PyQt5.QtWidgets import QLabel, QSizePolicy, QWidget, QHBoxLayout, QToolButton, QVBoxLayout, QSlider
 
 import numpy as np
 
@@ -19,60 +20,251 @@ from defacer.video.reader import VideoReader
 from defacer.gui.annotation import BoundingBox, Annotation, AnnotationStore
 
 
-class AnnotationToolbar(QWidget):
-    """アノテーション選択時に表示されるフローティングツールバー"""
+@dataclass
+class MergeCandidateState:
+    """統合候補探索の状態"""
+    source_track_id: int | None = None
+    candidates: list = field(default_factory=list)  # list[MergeSuggestion]
+    selected_idx: int = 0
+    visible: bool = False
 
-    delete_clicked = pyqtSignal()
-    delete_track_clicked = pyqtSignal()
+    # パラメータ
+    max_time_gap: int = 60
+    max_position_distance: float = 200.0
+    min_confidence: float = 0.5
+
+
+class MergeCandidateBar(QWidget):
+    """統合候補選択バー（ビデオ下部に表示）"""
+
+    prev_clicked = pyqtSignal()
+    next_clicked = pyqtSignal()
+    merge_clicked = pyqtSignal()
+    cancel_clicked = pyqtSignal()
+    params_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         # レイアウト設定
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
 
-        # 削除ボタン
-        self.delete_btn = QToolButton(self)
-        self.delete_btn.setText("🗑")
-        self.delete_btn.setToolTip("このアノテーションを削除")
-        self.delete_btn.clicked.connect(self.delete_clicked.emit)
-        layout.addWidget(self.delete_btn)
+        # 情報ラベル
+        self.info_label = QLabel("候補 0/0", self)
+        self.info_label.setStyleSheet("color: white; font-size: 14px;")
+        layout.addWidget(self.info_label, 1)
 
-        # トラック削除ボタン
-        self.delete_track_btn = QToolButton(self)
-        self.delete_track_btn.setText("⊗")
-        self.delete_track_btn.setToolTip("このトラックの全アノテーションを削除")
-        self.delete_track_btn.clicked.connect(self.delete_track_clicked.emit)
-        layout.addWidget(self.delete_track_btn)
+        # 前へボタン
+        self.prev_btn = QToolButton(self)
+        self.prev_btn.setText("◀")
+        self.prev_btn.setToolTip("前の候補")
+        self.prev_btn.clicked.connect(self.prev_clicked.emit)
+        layout.addWidget(self.prev_btn)
+
+        # 次へボタン
+        self.next_btn = QToolButton(self)
+        self.next_btn.setText("▶")
+        self.next_btn.setToolTip("次の候補")
+        self.next_btn.clicked.connect(self.next_clicked.emit)
+        layout.addWidget(self.next_btn)
+
+        # パラメータボタン
+        self.params_btn = QToolButton(self)
+        self.params_btn.setText("⚙")
+        self.params_btn.setToolTip("パラメータ調整")
+        self.params_btn.clicked.connect(self.params_clicked.emit)
+        layout.addWidget(self.params_btn)
+
+        # 統合ボタン
+        self.merge_btn = QToolButton(self)
+        self.merge_btn.setText("統合")
+        self.merge_btn.setToolTip("この候補で統合を実行")
+        self.merge_btn.clicked.connect(self.merge_clicked.emit)
+        layout.addWidget(self.merge_btn)
+
+        # キャンセルボタン
+        self.cancel_btn = QToolButton(self)
+        self.cancel_btn.setText("✕")
+        self.cancel_btn.setToolTip("キャンセル")
+        self.cancel_btn.clicked.connect(self.cancel_clicked.emit)
+        layout.addWidget(self.cancel_btn)
 
         # ダークテーマスタイル
         self.setStyleSheet("""
             QWidget {
-                background-color: rgba(40, 40, 40, 220);
+                background-color: rgba(40, 40, 40, 240);
                 border: 1px solid rgba(100, 100, 100, 200);
                 border-radius: 4px;
             }
             QToolButton {
-                background-color: transparent;
-                border: none;
+                background-color: rgba(60, 60, 60, 150);
+                border: 1px solid rgba(100, 100, 100, 150);
+                border-radius: 3px;
                 color: white;
-                font-size: 16px;
-                padding: 4px 8px;
-                min-width: 24px;
-                min-height: 24px;
+                font-size: 14px;
+                padding: 6px 12px;
+                min-width: 30px;
+                min-height: 28px;
             }
             QToolButton:hover {
-                background-color: rgba(80, 80, 80, 150);
-                border-radius: 2px;
+                background-color: rgba(80, 80, 80, 180);
+                border: 1px solid rgba(120, 120, 120, 180);
             }
             QToolButton:pressed {
-                background-color: rgba(100, 100, 100, 150);
+                background-color: rgba(100, 100, 100, 180);
             }
         """)
 
         self.hide()
+
+    def update_info(self, current: int, total: int, suggestion) -> None:
+        """情報を更新"""
+        if total == 0:
+            self.info_label.setText("候補なし")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            self.merge_btn.setEnabled(False)
+        else:
+            # トラックID一覧を表示
+            track_ids_str = " → ".join([f"#{tid}" for tid in suggestion.track_ids])
+            confidence_pct = int(suggestion.confidence * 100)
+            self.info_label.setText(
+                f"候補 {current + 1}/{total}: {track_ids_str} ({confidence_pct}%)"
+            )
+            self.prev_btn.setEnabled(total > 1)
+            self.next_btn.setEnabled(total > 1)
+            self.merge_btn.setEnabled(True)
+
+
+class MergeParamsPanel(QWidget):
+    """統合パラメータ調整パネル"""
+
+    params_changed = pyqtSignal(int, float, float)  # time_gap, position, confidence
+    search_clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+
+        # レイアウト設定
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # 時間差スライダー
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("時間差:", self))
+        self.time_slider = QSlider(Qt.Horizontal, self)
+        self.time_slider.setRange(10, 300)
+        self.time_slider.setValue(60)
+        self.time_slider.valueChanged.connect(self._on_params_changed)
+        time_layout.addWidget(self.time_slider, 1)
+        self.time_label = QLabel("60f", self)
+        self.time_label.setMinimumWidth(50)
+        time_layout.addWidget(self.time_label)
+        layout.addLayout(time_layout)
+
+        # 位置差スライダー
+        pos_layout = QHBoxLayout()
+        pos_layout.addWidget(QLabel("位置差:", self))
+        self.pos_slider = QSlider(Qt.Horizontal, self)
+        self.pos_slider.setRange(50, 500)
+        self.pos_slider.setValue(200)
+        self.pos_slider.valueChanged.connect(self._on_params_changed)
+        pos_layout.addWidget(self.pos_slider, 1)
+        self.pos_label = QLabel("200px", self)
+        self.pos_label.setMinimumWidth(50)
+        pos_layout.addWidget(self.pos_label)
+        layout.addLayout(pos_layout)
+
+        # 信頼度スライダー
+        conf_layout = QHBoxLayout()
+        conf_layout.addWidget(QLabel("信頼度:", self))
+        self.conf_slider = QSlider(Qt.Horizontal, self)
+        self.conf_slider.setRange(0, 100)
+        self.conf_slider.setValue(50)
+        self.conf_slider.valueChanged.connect(self._on_params_changed)
+        conf_layout.addWidget(self.conf_slider, 1)
+        self.conf_label = QLabel("50%", self)
+        self.conf_label.setMinimumWidth(50)
+        conf_layout.addWidget(self.conf_label)
+        layout.addLayout(conf_layout)
+
+        # 再検索ボタン
+        self.search_btn = QToolButton(self)
+        self.search_btn.setText("再検索")
+        self.search_btn.clicked.connect(self.search_clicked.emit)
+        layout.addWidget(self.search_btn)
+
+        # ダークテーマスタイル
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgb(50, 50, 50);
+                color: white;
+                border: 1px solid rgb(100, 100, 100);
+                border-radius: 4px;
+            }
+            QLabel {
+                background-color: transparent;
+                border: none;
+                font-size: 12px;
+            }
+            QSlider::groove:horizontal {
+                border: 1px solid rgb(80, 80, 80);
+                height: 6px;
+                background: rgb(70, 70, 70);
+                margin: 2px 0;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: rgb(100, 150, 200);
+                border: 1px solid rgb(80, 120, 160);
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+            QToolButton {
+                background-color: rgb(70, 70, 70);
+                border: 1px solid rgb(100, 100, 100);
+                border-radius: 3px;
+                padding: 8px;
+                font-size: 13px;
+            }
+            QToolButton:hover {
+                background-color: rgb(90, 90, 90);
+            }
+        """)
+
+        self.setFixedWidth(280)
+        self.hide()
+
+    def _on_params_changed(self) -> None:
+        """パラメータ変更時"""
+        time_gap = self.time_slider.value()
+        position = float(self.pos_slider.value())
+        confidence = self.conf_slider.value() / 100.0
+
+        self.time_label.setText(f"{time_gap}f")
+        self.pos_label.setText(f"{int(position)}px")
+        self.conf_label.setText(f"{int(confidence * 100)}%")
+
+        self.params_changed.emit(time_gap, position, confidence)
+
+    def get_params(self) -> tuple[int, float, float]:
+        """現在のパラメータを取得"""
+        return (
+            self.time_slider.value(),
+            float(self.pos_slider.value()),
+            self.conf_slider.value() / 100.0,
+        )
+
+    def set_params(self, time_gap: int, position: float, confidence: float) -> None:
+        """パラメータを設定"""
+        self.time_slider.setValue(time_gap)
+        self.pos_slider.setValue(int(position))
+        self.conf_slider.setValue(int(confidence * 100))
 
 
 class VideoPlayerWidget(QLabel):
@@ -129,10 +321,21 @@ class VideoPlayerWidget(QLabel):
         self._offset_x = 0
         self._offset_y = 0
 
-        # フローティングツールバー
-        self._toolbar = AnnotationToolbar(self)
-        self._toolbar.delete_clicked.connect(self._delete_current_annotation)
-        self._toolbar.delete_track_clicked.connect(self._delete_current_track)
+        # 統合候補探索の状態
+        self._merge_state = MergeCandidateState()
+
+        # 統合候補選択バー
+        self._merge_bar = MergeCandidateBar(self)
+        self._merge_bar.prev_clicked.connect(self._prev_candidate)
+        self._merge_bar.next_clicked.connect(self._next_candidate)
+        self._merge_bar.merge_clicked.connect(self._confirm_merge)
+        self._merge_bar.cancel_clicked.connect(self._cancel_merge_mode)
+        self._merge_bar.params_clicked.connect(self._toggle_params_panel)
+
+        # パラメータ調整パネル
+        self._params_panel = MergeParamsPanel(self)
+        self._params_panel.params_changed.connect(self._on_params_changed)
+        self._params_panel.search_clicked.connect(self._re_search_candidates)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -192,7 +395,6 @@ class VideoPlayerWidget(QLabel):
         # 選択を解除（フレームが変わったら）
         self._selected_annotation = None
         self._selected_index = -1
-        self._hide_toolbar()
 
         self._update_display()
         self.frame_changed.emit(frame_number)
@@ -241,12 +443,16 @@ class VideoPlayerWidget(QLabel):
             painter.setBrush(QBrush(QColor(255, 255, 0, 30)))
             self._draw_bbox(painter, self._drawing_rect)
 
+        # 統合候補の軌跡オーバーレイ
+        if self._merge_state.visible:
+            self._draw_merge_overlay(painter)
+
         painter.end()
         self.setPixmap(scaled_pixmap)
 
-        # ツールバー位置を更新
-        if self._toolbar.isVisible():
-            self._update_toolbar_position()
+        # 統合候補バー位置を更新
+        if self._merge_bar.isVisible():
+            self._update_merge_bar_position()
 
     def _get_track_color(self, track_id: int | None) -> tuple[int, int, int]:
         """トラックIDに基づいて色を生成（HSVベース）"""
@@ -400,6 +606,11 @@ class VideoPlayerWidget(QLabel):
 
         # トラックIDがある場合のみ統合メニューを表示
         if ann.track_id is not None:
+            # 統合候補を探す
+            find_merge_action = menu.addAction(f"トラック {ann.track_id} の統合候補を探す...")
+            find_merge_action.triggered.connect(lambda: self._start_merge_search_for_annotation(ann))
+
+            # 手動で統合先を選択
             merge_action = menu.addAction(f"トラック {ann.track_id} を別のトラックに統合...")
             merge_action.triggered.connect(lambda: self._show_merge_dialog(ann))
 
@@ -408,6 +619,11 @@ class VideoPlayerWidget(QLabel):
         # 削除メニュー
         delete_action = menu.addAction("このアノテーションを削除")
         delete_action.triggered.connect(lambda: self._delete_annotation_at_point(ann))
+
+        # トラック全体削除メニュー
+        if ann.track_id is not None:
+            delete_track_action = menu.addAction(f"トラック {ann.track_id} の全アノテーションを削除...")
+            delete_track_action.triggered.connect(lambda: self._delete_track_for_annotation(ann))
 
         menu.exec_(event.globalPos())
 
@@ -444,14 +660,12 @@ class VideoPlayerWidget(QLabel):
             self._drag_offset = (x - ann.bbox.x1, y - ann.bbox.y1)
             self.annotation_selected.emit(ann)
             self._update_display()
-            self._show_toolbar()
             return
 
         # 3. 空白領域をクリック → 選択解除 OR 描画準備
         self._selected_annotation = None
         self._selected_index = -1
         self.annotation_selected.emit(None)
-        self._hide_toolbar()
         self._update_display()
 
         # 描画開始候補として座標を保存（移動後に判定）
@@ -613,13 +827,27 @@ class VideoPlayerWidget(QLabel):
         key = event.key()
         modifiers = event.modifiers()
 
+        # 統合候補モード中のキーボードショートカット
+        if self._merge_state.visible:
+            if key == Qt.Key_Left:
+                self._prev_candidate()
+                return
+            elif key == Qt.Key_Right:
+                self._next_candidate()
+                return
+            elif key == Qt.Key_Return:
+                self._confirm_merge()
+                return
+            elif key == Qt.Key_Escape:
+                self._cancel_merge_mode()
+                return
+
         # 削除キー
         if key in (Qt.Key_Delete, Qt.Key_Backspace):
             if self._selected_annotation:
                 self._annotation_store.remove_annotation(self._selected_annotation)
                 self._selected_annotation = None
                 self._selected_index = -1
-                self._hide_toolbar()
                 self.annotations_changed.emit(True)  # 構造変更
                 self._update_display()
             return
@@ -704,99 +932,12 @@ class VideoPlayerWidget(QLabel):
         # 表示更新のみ（変更通知はキーリリース時）
         self._update_display()
 
-    def _show_toolbar(self) -> None:
-        """ツールバーを表示（モードレス: 常に表示可能）"""
-        if not self._selected_annotation:
-            return
-
-        self._update_toolbar_position()
-        self._toolbar.show()
-
-    def _hide_toolbar(self) -> None:
-        """ツールバーを非表示"""
-        self._toolbar.hide()
-
-    def _update_toolbar_position(self) -> None:
-        """ツールバーの位置を更新"""
-        if not self._selected_annotation:
-            return
-
-        bbox = self._selected_annotation.bbox
-
-        # アノテーションの右上（スケール変換 + オフセット）
-        x = int(bbox.x2 * self._scale) + self._offset_x + 8
-        y = int(bbox.y1 * self._scale) + self._offset_y
-
-        toolbar_width = self._toolbar.sizeHint().width()
-        toolbar_height = self._toolbar.sizeHint().height()
-
-        # 画面端調整（右端）
-        if x + toolbar_width > self.width():
-            x = int(bbox.x1 * self._scale) + self._offset_x - toolbar_width - 8
-
-        # 画面端調整（上端）
-        if y < 0:
-            y = int(bbox.y2 * self._scale) + self._offset_y + 8
-
-        # 画面端調整（下端）
-        if y + toolbar_height > self.height():
-            y = self.height() - toolbar_height
-
-        self._toolbar.move(x, y)
-
-    def _delete_current_annotation(self) -> None:
-        """選択中のアノテーションを削除"""
-        if self._selected_annotation:
-            self._annotation_store.remove_annotation(self._selected_annotation)
-            self._selected_annotation = None
-            self._selected_index = -1
-            self._hide_toolbar()
-            self.annotations_changed.emit(True)  # 構造変更
-            self._update_display()
-
-    def _delete_current_track(self) -> None:
-        """選択中のアノテーションのトラック全体を削除"""
-        from PyQt5.QtWidgets import QMessageBox
-
-        if not self._selected_annotation or self._selected_annotation.track_id is None:
-            return
-
-        track_id = self._selected_annotation.track_id
-        track_info = self._annotation_store.get_track_info(track_id)
-
-        if not track_info.get("exists"):
-            return
-
-        # 確認ダイアログ
-        reply = QMessageBox.question(
-            self,
-            "トラック削除の確認",
-            f"トラック #{track_id} の全アノテーション（{track_info['annotation_count']}個）を削除しますか？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-
-        if reply == QMessageBox.Yes:
-            count = self._annotation_store.remove_track(track_id)
-            self._selected_annotation = None
-            self._selected_index = -1
-            self._hide_toolbar()
-            self.annotations_changed.emit(True)  # 構造変更
-            self._update_display()
-
-            QMessageBox.information(
-                self,
-                "トラック削除",
-                f"トラック #{track_id} の全アノテーション（{count}個）を削除しました。",
-            )
-
     def delete_selected_annotation(self) -> bool:
         """選択中のアノテーションを削除"""
         if self._selected_annotation:
             self._annotation_store.remove_annotation(self._selected_annotation)
             self._selected_annotation = None
             self._selected_index = -1
-            self._hide_toolbar()
             self.annotations_changed.emit(True)  # 構造変更
             self._update_display()
             return True
@@ -811,12 +952,13 @@ class VideoPlayerWidget(QLabel):
         if next_frame >= self._reader.frame_count:
             return False
 
-        # 同じtrack_idのアノテーションが次のフレームに既にあるか確認
-        existing = None
-        for ann in self._annotation_store.get_frame_annotations(next_frame):
-            if ann.track_id == self._selected_annotation.track_id:
-                existing = ann
-                break
+        # 同じtrack_idのアノテーションが次のフレームに既にあるか確認（O(1)）
+        existing = self._annotation_store.get_annotation_by_frame_track(
+            next_frame, self._selected_annotation.track_id
+        )
+
+        # コピー先のアノテーションを記憶
+        target_ann = None
 
         if existing:
             # 既存のものを更新
@@ -826,6 +968,7 @@ class VideoPlayerWidget(QLabel):
                 self._selected_annotation.bbox.x2,
                 self._selected_annotation.bbox.y2,
             )
+            target_ann = existing
         else:
             # 新規作成
             new_ann = Annotation(
@@ -840,10 +983,24 @@ class VideoPlayerWidget(QLabel):
                 is_manual=True,
             )
             self._annotation_store.add(new_ann)
+            target_ann = new_ann
 
         self.annotations_changed.emit(True)  # 構造変更
-        # 次のフレームに移動
+
+        # 次のフレームに移動（seek()内で選択状態がクリアされる）
         self.seek(next_frame)
+
+        # コピーしたアノテーションを選択状態にする
+        if target_ann:
+            frame_anns = self._annotation_store.get_frame_annotations(next_frame)
+            for i, ann in enumerate(frame_anns):
+                if ann is target_ann:
+                    self._selected_annotation = target_ann
+                    self._selected_index = i
+                    self._update_display()
+                    self.annotation_selected.emit(target_ann)
+                    break
+
         return True
 
     def play(self) -> None:
@@ -999,8 +1156,8 @@ class VideoPlayerWidget(QLabel):
         super().resizeEvent(event)
         if self._current_frame is not None:
             self._update_display()
-        if self._toolbar.isVisible():
-            self._update_toolbar_position()
+        if self._merge_bar.isVisible():
+            self._update_merge_bar_position()
 
     def _show_merge_dialog(self, annotation: Annotation) -> None:
         """トラック統合ダイアログを表示"""
@@ -1105,6 +1262,335 @@ class VideoPlayerWidget(QLabel):
         self._annotation_store.remove_annotation(annotation)
         self.annotations_changed.emit(True)  # 構造変更
         self._update_display()
+
+    def _delete_track_for_annotation(self, annotation: Annotation) -> None:
+        """指定アノテーションのトラック全体を削除"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        if annotation.track_id is None:
+            return
+
+        track_id = annotation.track_id
+        track_info = self._annotation_store.get_track_info(track_id)
+
+        if not track_info.get("exists"):
+            return
+
+        # 確認ダイアログ
+        reply = QMessageBox.question(
+            self,
+            "トラック削除の確認",
+            f"トラック #{track_id} の全アノテーション（{track_info['annotation_count']}個）を削除しますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply == QMessageBox.Yes:
+            count = self._annotation_store.remove_track(track_id)
+            self._selected_annotation = None
+            self._selected_index = -1
+            self.annotations_changed.emit(True)  # 構造変更
+            self._update_display()
+
+            QMessageBox.information(
+                self,
+                "トラック削除",
+                f"トラック #{track_id} の全アノテーション（{count}個）を削除しました。",
+            )
+
+    def _start_merge_search_for_annotation(self, annotation: Annotation) -> None:
+        """指定アノテーションの統合候補探索を開始"""
+        if annotation.track_id is None:
+            return
+
+        # アノテーションを選択状態にする
+        self._selected_annotation = annotation
+        self.annotation_selected.emit(annotation)
+        self._update_display()
+
+        # 統合候補探索を開始
+        self._start_merge_search()
+
+    def _start_merge_search(self) -> None:
+        """統合候補探索を開始"""
+        if not self._selected_annotation or self._selected_annotation.track_id is None:
+            return
+
+        track_id = self._selected_annotation.track_id
+
+        from defacer.tracking.merge_suggestion import compute_merge_suggestions
+
+        all_suggestions = compute_merge_suggestions(
+            self._annotation_store,
+            max_time_gap=self._merge_state.max_time_gap,
+            max_position_distance=self._merge_state.max_position_distance,
+            min_confidence=self._merge_state.min_confidence,
+        )
+
+        # 選択中トラックを含む候補のみフィルタ
+        filtered = [s for s in all_suggestions if track_id in s.track_ids]
+
+        self._merge_state.source_track_id = track_id
+        self._merge_state.candidates = filtered
+        self._merge_state.selected_idx = 0
+        self._merge_state.visible = len(filtered) > 0
+
+        if filtered:
+            self._show_merge_candidate_ui()
+        else:
+            self._show_no_candidates_toast()
+
+        self._update_display()
+
+    def _re_search_candidates(self) -> None:
+        """パラメータを変更して再検索"""
+        if self._merge_state.source_track_id is None:
+            return
+
+        # 現在の選択を保存
+        old_track_id = self._merge_state.source_track_id
+
+        # パラメータを更新
+        time_gap, position, confidence = self._params_panel.get_params()
+        self._merge_state.max_time_gap = time_gap
+        self._merge_state.max_position_distance = position
+        self._merge_state.min_confidence = confidence
+
+        # 再検索
+        from defacer.tracking.merge_suggestion import compute_merge_suggestions
+
+        all_suggestions = compute_merge_suggestions(
+            self._annotation_store,
+            max_time_gap=time_gap,
+            max_position_distance=position,
+            min_confidence=confidence,
+        )
+
+        # 選択中トラックを含む候補のみフィルタ
+        filtered = [s for s in all_suggestions if old_track_id in s.track_ids]
+
+        self._merge_state.candidates = filtered
+        self._merge_state.selected_idx = 0
+        self._merge_state.visible = len(filtered) > 0
+
+        if filtered:
+            self._update_merge_bar()
+        else:
+            self._show_no_candidates_toast()
+            self._cancel_merge_mode()
+
+        self._update_display()
+
+    def _on_params_changed(self, time_gap: int, position: float, confidence: float) -> None:
+        """パラメータ変更時（スライダー操作）"""
+        self._merge_state.max_time_gap = time_gap
+        self._merge_state.max_position_distance = position
+        self._merge_state.min_confidence = confidence
+
+    def _show_merge_candidate_ui(self) -> None:
+        """統合候補UIを表示"""
+        self._update_merge_bar()
+        self._merge_bar.show()
+        self._update_merge_bar_position()
+
+        # パラメータパネルに現在値を設定
+        self._params_panel.set_params(
+            self._merge_state.max_time_gap,
+            self._merge_state.max_position_distance,
+            self._merge_state.min_confidence,
+        )
+
+    def _update_merge_bar(self) -> None:
+        """候補バーの情報を更新"""
+        if not self._merge_state.candidates:
+            self._merge_bar.update_info(0, 0, None)
+            return
+
+        current = self._merge_state.selected_idx
+        total = len(self._merge_state.candidates)
+        suggestion = self._merge_state.candidates[current]
+
+        self._merge_bar.update_info(current, total, suggestion)
+
+    def _update_merge_bar_position(self) -> None:
+        """候補バーの位置を更新"""
+        bar_height = self._merge_bar.sizeHint().height()
+        x = 10
+        y = self.height() - bar_height - 10
+
+        self._merge_bar.move(x, y)
+        self._merge_bar.setFixedWidth(self.width() - 20)
+
+    def _toggle_params_panel(self) -> None:
+        """パラメータパネルの表示/非表示を切り替え"""
+        if self._params_panel.isVisible():
+            self._params_panel.hide()
+        else:
+            # 候補バーの上に表示
+            bar_pos = self._merge_bar.pos()
+            panel_height = self._params_panel.sizeHint().height()
+            x = bar_pos.x()
+            y = bar_pos.y() - panel_height - 10
+
+            self._params_panel.move(x, y)
+            self._params_panel.show()
+
+    def _prev_candidate(self) -> None:
+        """前の候補を表示"""
+        if not self._merge_state.candidates:
+            return
+
+        self._merge_state.selected_idx = (
+            self._merge_state.selected_idx - 1
+        ) % len(self._merge_state.candidates)
+
+        self._update_merge_bar()
+        self._update_display()
+
+    def _next_candidate(self) -> None:
+        """次の候補を表示"""
+        if not self._merge_state.candidates:
+            return
+
+        self._merge_state.selected_idx = (
+            self._merge_state.selected_idx + 1
+        ) % len(self._merge_state.candidates)
+
+        self._update_merge_bar()
+        self._update_display()
+
+    def _confirm_merge(self) -> None:
+        """現在の候補で統合を実行"""
+        if not self._merge_state.candidates:
+            return
+
+        candidate = self._merge_state.candidates[self._merge_state.selected_idx]
+
+        # 最初のトラックを統合先にして順次統合
+        target_id = candidate.track_ids[0]
+        for source_id in candidate.track_ids[1:]:
+            self._annotation_store.merge_tracks(source_id, target_id)
+
+        self._cancel_merge_mode()
+        self.annotations_changed.emit(True)
+
+        # 完了メッセージ
+        from PyQt5.QtWidgets import QMessageBox
+        track_ids_str = ", ".join([f"#{tid}" for tid in candidate.track_ids])
+        QMessageBox.information(
+            self,
+            "トラック統合",
+            f"トラック {track_ids_str} を統合しました。",
+        )
+
+    def _cancel_merge_mode(self) -> None:
+        """統合候補モードをキャンセル"""
+        self._merge_state.visible = False
+        self._merge_state.candidates = []
+        self._merge_state.selected_idx = 0
+        self._merge_bar.hide()
+        self._params_panel.hide()
+        self._update_display()
+
+    def _show_no_candidates_toast(self) -> None:
+        """候補なしのメッセージを表示"""
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            "統合候補なし",
+            "選択中のトラックに統合候補が見つかりませんでした。",
+        )
+
+    def _draw_merge_overlay(self, painter: QPainter) -> None:
+        """統合候補の軌跡をオーバーレイ描画"""
+        if not self._merge_state.candidates:
+            return
+
+        candidate = self._merge_state.candidates[self._merge_state.selected_idx]
+
+        from defacer.tracking.merge_suggestion import collect_track_infos
+        track_infos = collect_track_infos(self._annotation_store)
+        track_map = {t.track_id: t for t in track_infos}
+
+        # 各トラックの軌跡を描画
+        for i, track_id in enumerate(candidate.track_ids):
+            info = track_map.get(track_id)
+            if not info:
+                continue
+
+            # 開始点と終了点を取得
+            start_center = self._bbox_center_scaled(info.first_bbox)
+            end_center = self._bbox_center_scaled(info.last_bbox)
+
+            # 開始 → 終了のグラデーション線
+            # 色: 青（開始）→ 赤（終了）
+            pen = QPen(QColor(100, 100, 255), 3)
+            painter.setPen(pen)
+
+            # トラック内のすべてのアノテーションを取得して線を引く
+            track_points = []
+            for ann in self._annotation_store:
+                if ann.track_id == track_id:
+                    center = self._bbox_center_scaled(ann.bbox)
+                    track_points.append((ann.frame, center))
+
+            # フレーム順にソート
+            track_points.sort(key=lambda x: x[0])
+
+            # 連続した点を線で結ぶ
+            for j in range(len(track_points) - 1):
+                _, pt1 = track_points[j]
+                _, pt2 = track_points[j + 1]
+
+                # グラデーション色（青→赤）
+                ratio = j / max(1, len(track_points) - 1)
+                r = int(100 + 155 * ratio)
+                g = int(100 - 100 * ratio)
+                b = int(255 - 255 * ratio)
+
+                pen = QPen(QColor(r, g, b), 3)
+                painter.setPen(pen)
+                painter.drawLine(pt1[0], pt1[1], pt2[0], pt2[1])
+
+            # 開始点マーカー（青円）
+            painter.setBrush(QBrush(QColor(100, 100, 255)))
+            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            painter.drawEllipse(start_center[0] - 6, start_center[1] - 6, 12, 12)
+
+            # 終了点マーカー（赤円）
+            painter.setBrush(QBrush(QColor(255, 100, 100)))
+            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            painter.drawEllipse(end_center[0] - 6, end_center[1] - 6, 12, 12)
+
+            # トラック間接続線（緑点線）
+            if i < len(candidate.track_ids) - 1:
+                next_track_id = candidate.track_ids[i + 1]
+                next_info = track_map.get(next_track_id)
+                if next_info:
+                    next_start_center = self._bbox_center_scaled(next_info.first_bbox)
+
+                    # ベジェ曲線で接続
+                    pen = QPen(QColor(100, 255, 100), 2, Qt.DashLine)
+                    painter.setPen(pen)
+                    painter.drawLine(
+                        end_center[0],
+                        end_center[1],
+                        next_start_center[0],
+                        next_start_center[1],
+                    )
+
+    def _bbox_center_scaled(self, bbox: BoundingBox | tuple[int, int, int, int]) -> tuple[int, int]:
+        """バウンディングボックスの中心座標（スケール済み）"""
+        if isinstance(bbox, tuple):
+            # タプル形式 (x1, y1, x2, y2)
+            x1, y1, x2, y2 = bbox
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+        else:
+            # BoundingBoxオブジェクト
+            cx = (bbox.x1 + bbox.x2) / 2
+            cy = (bbox.y1 + bbox.y2) / 2
+        return (int(cx * self._scale), int(cy * self._scale))
 
     def release(self) -> None:
         """リソースを解放"""

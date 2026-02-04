@@ -140,6 +140,10 @@ class AnnotationStore:
     _track_ids: set[int] = field(default_factory=set)
     _track_count: dict[int, int] = field(default_factory=dict)  # track_id → アノテーション数
 
+    # 高速アクセス用インデックス
+    _track_annotations: dict[int, dict[int, Annotation]] = field(default_factory=dict)  # track_id → {id(ann): ann}
+    _frame_track_index: dict[tuple[int, int], Annotation] = field(default_factory=dict)  # (frame, track_id) → ann
+
     # 進捗通知コールバック
     progress_callback: Callable[[int, int], None] | None = None
 
@@ -148,11 +152,13 @@ class AnnotationStore:
         self._total_count = 0
         self._track_ids.clear()
         self._track_count.clear()
+        self._track_annotations.clear()
+        self._frame_track_index.clear()
 
         frames = list(self.annotations.items())
         total = len(frames)
 
-        for i, (_, anns) in enumerate(frames):
+        for i, (frame, anns) in enumerate(frames):
             # 進捗通知（100フレームごと）
             if self.progress_callback and total > 100 and i % 100 == 0:
                 self.progress_callback(i, total)
@@ -162,6 +168,12 @@ class AnnotationStore:
                 if ann.track_id is not None:
                     self._track_ids.add(ann.track_id)
                     self._track_count[ann.track_id] = self._track_count.get(ann.track_id, 0) + 1
+
+                    # 高速インデックスを構築
+                    if ann.track_id not in self._track_annotations:
+                        self._track_annotations[ann.track_id] = {}
+                    self._track_annotations[ann.track_id][id(ann)] = ann
+                    self._frame_track_index[(frame, ann.track_id)] = ann
 
         # 完了通知
         if self.progress_callback and total > 100:
@@ -182,6 +194,12 @@ class AnnotationStore:
         if annotation.track_id is not None:
             self._track_ids.add(annotation.track_id)
             self._track_count[annotation.track_id] = self._track_count.get(annotation.track_id, 0) + 1
+
+            # インデックス更新
+            if annotation.track_id not in self._track_annotations:
+                self._track_annotations[annotation.track_id] = {}
+            self._track_annotations[annotation.track_id][id(annotation)] = annotation
+            self._frame_track_index[(frame, annotation.track_id)] = annotation
 
     def remove(self, frame: int, index: int, save_undo: bool = True) -> Annotation | None:
         """アノテーションを削除"""
@@ -206,9 +224,16 @@ class AnnotationStore:
                 # 最後の1個なので削除
                 self._track_ids.discard(removed.track_id)
                 self._track_count.pop(removed.track_id, None)
+                self._track_annotations.pop(removed.track_id, None)
             else:
                 # まだ残っているので減らす
                 self._track_count[removed.track_id] = count - 1
+                # インデックスから削除
+                if removed.track_id in self._track_annotations:
+                    self._track_annotations[removed.track_id].pop(id(removed), None)
+
+            # フレーム×トラックインデックスから削除
+            self._frame_track_index.pop((frame, removed.track_id), None)
 
         return removed
 
@@ -218,11 +243,19 @@ class AnnotationStore:
         if frame not in self.annotations:
             return False
 
-        for i, ann in enumerate(self.annotations[frame]):
-            if ann is annotation:
-                self.remove(frame, i, save_undo)
-                return True
-        return False
+        # インデックスで存在確認（O(1)）
+        if annotation.track_id is not None:
+            key = (frame, annotation.track_id)
+            if key not in self._frame_track_index:
+                return False
+
+        # リストから削除位置を特定
+        try:
+            i = self.annotations[frame].index(annotation)
+            self.remove(frame, i, save_undo)
+            return True
+        except ValueError:
+            return False
 
     def get_frame_annotations(self, frame: int) -> list[Annotation]:
         """指定フレームのアノテーションを取得"""
@@ -254,22 +287,21 @@ class AnnotationStore:
 
     def get_track_info(self, track_id: int) -> dict:
         """トラックの情報を取得（フレーム範囲、アノテーション数）"""
-        frames = []
-        count = 0
-        for ann in self:
-            if ann.track_id == track_id:
-                frames.append(ann.frame)
-                count += 1
-
-        if not frames:
+        # インデックスから直接取得（O(トラック内アノテーション数)）
+        if track_id not in self._track_annotations:
             return {"exists": False}
 
+        anns = self._track_annotations[track_id].values()
+        if not anns:
+            return {"exists": False}
+
+        frames = [ann.frame for ann in anns]
         return {
             "exists": True,
             "frame_min": min(frames),
             "frame_max": max(frames),
             "frame_count": len(set(frames)),
-            "annotation_count": count,
+            "annotation_count": len(frames),
         }
 
     def remove_track(self, track_id: int, save_undo: bool = True) -> int:
@@ -286,23 +318,41 @@ class AnnotationStore:
         if save_undo:
             self._save_undo_state()
 
-        frames = list(self.annotations.items())
-        total = len(frames)
-        count = 0
+        # インデックスから対象アノテーションを直接取得（O(トラック内アノテーション数)）
+        if track_id not in self._track_annotations:
+            return 0
 
-        for i, (frame, anns) in enumerate(frames):
+        target_anns = list(self._track_annotations[track_id].values())
+        count = len(target_anns)
+
+        # フレームごとにグループ化
+        frame_to_anns: dict[int, list[Annotation]] = {}
+        for ann in target_anns:
+            if ann.frame not in frame_to_anns:
+                frame_to_anns[ann.frame] = []
+            frame_to_anns[ann.frame].append(ann)
+
+        frames_list = list(frame_to_anns.items())
+        total = len(frames_list)
+
+        # フレームごとにまとめて削除
+        for i, (frame, anns_to_remove) in enumerate(frames_list):
             # 進捗通知（100フレームごと）
             if self.progress_callback and total > 100 and i % 100 == 0:
                 self.progress_callback(i, total)
 
-            to_remove = [j for j, ann in enumerate(anns) if ann.track_id == track_id]
-            # 逆順で削除（インデックスがずれないように）
-            for j in reversed(to_remove):
-                anns.pop(j)
-                count += 1
+            if frame not in self.annotations:
+                continue
+
+            # 該当アノテーションを削除
+            for ann in anns_to_remove:
+                try:
+                    self.annotations[frame].remove(ann)
+                except ValueError:
+                    pass
 
             # 空になったフレームを削除
-            if not anns:
+            if not self.annotations[frame]:
                 del self.annotations[frame]
 
         # 完了通知
@@ -313,6 +363,11 @@ class AnnotationStore:
         self._total_count -= count
         self._track_ids.discard(track_id)
         self._track_count.pop(track_id, None)
+        self._track_annotations.pop(track_id, None)
+
+        # フレーム×トラックインデックスから削除
+        for ann in target_anns:
+            self._frame_track_index.pop((ann.frame, track_id), None)
 
         return count
 
@@ -339,19 +394,27 @@ class AnnotationStore:
         if save_undo:
             self._save_undo_state()
 
-        frames = list(self.annotations.items())
-        total = len(frames)
-        count = 0
+        # インデックスから対象アノテーションを直接取得
+        if source_track_id not in self._track_annotations:
+            return 0
 
-        for i, (frame, anns) in enumerate(frames):
-            # 進捗通知（100フレームごと）
+        source_anns = list(self._track_annotations[source_track_id].values())
+        count = len(source_anns)
+
+        # 進捗通知の準備
+        total = count
+        for i, ann in enumerate(source_anns):
+            # 進捗通知（100個ごと）
             if self.progress_callback and total > 100 and i % 100 == 0:
                 self.progress_callback(i, total)
 
-            for ann in anns:
-                if ann.track_id == source_track_id:
-                    ann.track_id = target_track_id
-                    count += 1
+            # track_idを変更
+            old_frame = ann.frame
+            ann.track_id = target_track_id
+
+            # インデックスを更新
+            self._frame_track_index.pop((old_frame, source_track_id), None)
+            self._frame_track_index[(old_frame, target_track_id)] = ann
 
         # 完了通知
         if self.progress_callback and total > 100:
@@ -362,6 +425,13 @@ class AnnotationStore:
         self._track_ids.discard(source_track_id)
         self._track_ids.add(target_track_id)
         self._track_count[target_track_id] = self._track_count.get(target_track_id, 0) + source_count
+
+        # トラックアノテーションインデックスを移動
+        if target_track_id not in self._track_annotations:
+            self._track_annotations[target_track_id] = {}
+        for ann_id, ann in self._track_annotations[source_track_id].items():
+            self._track_annotations[target_track_id][ann_id] = ann
+        self._track_annotations.pop(source_track_id, None)
 
         return count
 
@@ -431,6 +501,8 @@ class AnnotationStore:
         self._total_count = 0
         self._track_ids.clear()
         self._track_count.clear()
+        self._track_annotations.clear()
+        self._frame_track_index.clear()
 
     def _save_undo_state(self) -> None:
         """現在の状態をUndoスタックに保存"""
@@ -522,3 +594,25 @@ class AnnotationStore:
     def __iter__(self) -> Iterator[Annotation]:
         for frame in sorted(self.annotations.keys()):
             yield from self.annotations[frame]
+
+    def get_annotation_by_frame_track(self, frame: int, track_id: int) -> Annotation | None:
+        """指定フレーム・トラックIDのアノテーションを取得（O(1)）"""
+        return self._frame_track_index.get((frame, track_id))
+
+    def get_all_track_stats(self) -> dict[int, dict]:
+        """全トラックの統計情報を取得（インデックス活用でO(トラック数 × 平均アノテーション数)）
+
+        Returns:
+            {track_id: {"frame_min": int, "frame_max": int, "count": int}}
+        """
+        result = {}
+        for track_id, anns_dict in self._track_annotations.items():
+            if not anns_dict:
+                continue
+            frames = [ann.frame for ann in anns_dict.values()]
+            result[track_id] = {
+                "frame_min": min(frames),
+                "frame_max": max(frames),
+                "count": len(frames),
+            }
+        return result

@@ -65,10 +65,8 @@ from defacer.gui.timeline import TimelineWidget
 from defacer.gui.annotation import AnnotationStore
 from defacer.gui.export_dialog import ExportDialog
 from defacer.gui.detection_dialog import DetectionDialog
-from defacer.gui.track_editor import TrackEditorDialog
 from defacer.gui.retrack_dialog import RetrackDialog
 from defacer.tracking.interpolation import interpolate_track
-from defacer.tracking.merge_suggestion import compute_merge_suggestions
 from defacer.detection import get_available_detectors
 
 
@@ -122,33 +120,6 @@ class SimpleProgressDialog(QDialog):
         """キャンセル処理"""
         self._cancelled = True
         super().reject()
-
-
-class MergeSuggestionWorker(QThread):
-    """統合候補計算ワーカー"""
-
-    progress = pyqtSignal(int, int, str)  # current, total, message
-    finished = pyqtSignal(list)  # suggestions
-    error = pyqtSignal(str)  # error_message
-
-    def __init__(self, store, parent=None):
-        super().__init__(parent)
-        self._store = store
-
-    def run(self):
-        """バックグラウンド実行"""
-        try:
-            suggestions = compute_merge_suggestions(
-                self._store,
-                progress_callback=self._on_progress
-            )
-            self.finished.emit(suggestions)
-        except Exception as e:
-            self.error.emit(str(e))
-
-    def _on_progress(self, current, total, message):
-        """進捗コールバック"""
-        self.progress.emit(current, total, message)
 
 
 class MainWindow(QMainWindow):
@@ -291,37 +262,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(annotation_group)
 
-        # トラック一覧グループ
-        track_group = QGroupBox("トラック一覧")
-        track_layout = QVBoxLayout(track_group)
-
-        self._track_table = QTableWidget()
-        self._track_table.setColumnCount(3)
-        self._track_table.setHorizontalHeaderLabels(["ID", "フレーム範囲", "数"])
-        self._track_table.horizontalHeader().setStretchLastSection(False)
-        self._track_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._track_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._track_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self._track_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self._track_table.setMaximumHeight(150)
-        self._track_table.setToolTip("トラックをクリックして統合先を選択できます")
-        track_layout.addWidget(self._track_table)
-
-        # トラック統合ボタン
-        merge_btn_layout = QHBoxLayout()
-        self._merge_tracks_btn = QPushButton("選択を統合...")
-        self._merge_tracks_btn.clicked.connect(self._merge_selected_tracks)
-        self._merge_tracks_btn.setEnabled(False)
-        self._merge_tracks_btn.setToolTip("選択した2つのトラックを統合")
-        merge_btn_layout.addWidget(self._merge_tracks_btn)
-
-        refresh_tracks_btn = QPushButton("更新")
-        refresh_tracks_btn.clicked.connect(self._update_track_list)
-        merge_btn_layout.addWidget(refresh_tracks_btn)
-        track_layout.addLayout(merge_btn_layout)
-
-        layout.addWidget(track_group)
-
         # 検出設定グループ
         detection_group = QGroupBox("自動検出")
         detection_layout = QVBoxLayout(detection_group)
@@ -431,14 +371,6 @@ class MainWindow(QMainWindow):
         retrack_action.triggered.connect(self._run_retracking)
         edit_menu.addAction(retrack_action)
 
-        edit_menu.addSeparator()
-
-        # トラック編集
-        track_editor_action = QAction("トラック編集(&T)...", self)
-        track_editor_action.setShortcut("Ctrl+T")
-        track_editor_action.triggered.connect(self._open_track_editor)
-        edit_menu.addAction(track_editor_action)
-
         # 再生メニュー
         playback_menu = menubar.addMenu("再生(&P)")
 
@@ -512,13 +444,6 @@ class MainWindow(QMainWindow):
         save_action.triggered.connect(self._save_annotations)
         toolbar.addAction(save_action)
 
-        toolbar.addSeparator()
-
-        # トラック編集ボタン
-        track_editor_action = QAction("トラック編集", self)
-        track_editor_action.triggered.connect(self._open_track_editor)
-        toolbar.addAction(track_editor_action)
-
     def _setup_shortcuts(self) -> None:
         """追加のキーボードショートカットを設定"""
         # Fキーで次フレームにコピー
@@ -573,7 +498,6 @@ class MainWindow(QMainWindow):
             )
             self._update_video_info()
             self._update_annotation_info()
-            self._update_track_list()
 
             # 同名のアノテーションファイルがあれば読み込み
             annotation_path = path.with_suffix(".defacer.json")
@@ -633,16 +557,10 @@ class MainWindow(QMainWindow):
 
         Args:
             track_structure_changed: トラック構造が変更されたか（追加/削除/統合）
-                                     False の場合は位置変更のみなのでトラック一覧更新をスキップ
         """
         self._unsaved_changes = True
         self._save_action.setEnabled(True)
         self._update_annotation_info()
-
-        # トラック構造が変わった場合のみトラック一覧を更新（O(n)操作）
-        if track_structure_changed:
-            self._update_track_list()
-
         self._update_window_title()
 
     def _on_annotation_selected(self, annotation) -> None:
@@ -701,148 +619,6 @@ class MainWindow(QMainWindow):
             self._status_progress_bar.setMaximum(total)
             self._status_progress_bar.setValue(current)
             QApplication.processEvents()  # UIを更新
-
-    def _update_track_list(self) -> None:
-        """トラック一覧を更新"""
-        store = self._video_player.annotation_store
-
-        # プログレスバーを設定
-        store.progress_callback = self._update_progress
-
-        try:
-            # 一括でトラック情報を計算（O(n) で1回だけ）
-            total_annotations = len(store)
-            if total_annotations > 100:
-                self._status_bar.showMessage("トラック一覧を更新中...")
-
-            track_stats = {}
-            for idx, ann in enumerate(store):
-                # 進捗表示（100件ごと）
-                if total_annotations > 100 and idx % 100 == 0:
-                    self._update_progress(idx, total_annotations)
-
-                tid = ann.track_id
-                if tid is None:
-                    continue
-                if tid not in track_stats:
-                    track_stats[tid] = {"frames": [], "count": 0}
-                track_stats[tid]["frames"].append(ann.frame)
-                track_stats[tid]["count"] += 1
-
-            # 完了通知
-            if total_annotations > 100:
-                self._update_progress(total_annotations, total_annotations)
-
-            # テーブル更新中はUI更新を無効化して高速化
-            self._track_table.setUpdatesEnabled(False)
-            self._track_table.blockSignals(True)
-
-            try:
-                self._track_table.setRowCount(len(track_stats))
-
-                for row, (track_id, stats) in enumerate(sorted(track_stats.items())):
-                    # トラックID
-                    id_item = QTableWidgetItem(f"#{track_id}")
-                    id_item.setData(Qt.UserRole, track_id)
-                    self._track_table.setItem(row, 0, id_item)
-
-                    # フレーム範囲
-                    frame_min = min(stats["frames"])
-                    frame_max = max(stats["frames"])
-                    frame_range = f"{frame_min}-{frame_max}"
-                    range_item = QTableWidgetItem(frame_range)
-                    self._track_table.setItem(row, 1, range_item)
-
-                    # アノテーション数
-                    count_item = QTableWidgetItem(str(stats["count"]))
-                    self._track_table.setItem(row, 2, count_item)
-            finally:
-                # UI更新を再有効化
-                self._track_table.blockSignals(False)
-                self._track_table.setUpdatesEnabled(True)
-
-            # 選択状態に応じてボタンを有効化
-            self._track_table.itemSelectionChanged.connect(self._on_track_selection_changed)
-
-        finally:
-            # プログレスバーをクリア
-            store.progress_callback = None
-            self._status_progress_bar.setVisible(False)
-            if total_annotations > 100:
-                self._status_bar.showMessage("トラック一覧の更新完了")
-
-    def _on_track_selection_changed(self) -> None:
-        """トラック選択が変更された時"""
-        selected_rows = self._track_table.selectionModel().selectedRows()
-        self._merge_tracks_btn.setEnabled(len(selected_rows) == 2)
-
-    def _merge_selected_tracks(self) -> None:
-        """選択した2つのトラックを統合"""
-        selected_rows = self._track_table.selectionModel().selectedRows()
-        if len(selected_rows) != 2:
-            QMessageBox.warning(
-                self,
-                "トラック統合",
-                "統合するには2つのトラックを選択してください。",
-            )
-            return
-
-        # 選択されたトラックIDを取得
-        track_ids = []
-        for row in selected_rows:
-            item = self._track_table.item(row.row(), 0)
-            track_id = item.data(Qt.UserRole)
-            track_ids.append(track_id)
-
-        # 統合先を選択
-        items = [f"トラック #{tid}" for tid in track_ids]
-        item, ok = QInputDialog.getItem(
-            self,
-            "トラック統合",
-            "統合先のトラックを選択してください:",
-            items,
-            0,
-            False,
-        )
-
-        if not ok or not item:
-            return
-
-        target_track_id = track_ids[items.index(item)]
-        source_track_id = track_ids[1 - items.index(item)]
-
-        # VideoPlayerWidgetのメソッドを使用して統合
-        # 直接_merge_tracksを呼ぶのではなく、AnnotationStoreを使用
-        store = self._video_player.annotation_store
-
-        # 衝突チェック
-        conflicts = self._video_player._check_track_conflicts(source_track_id, target_track_id)
-
-        if conflicts:
-            reply = QMessageBox.question(
-                self,
-                "トラック統合の確認",
-                f"以下のフレームで統合元と統合先が重複しています:\n"
-                f"{', '.join(map(str, conflicts[:10]))}"
-                f"{'...' if len(conflicts) > 10 else ''}\n\n"
-                f"統合元のアノテーション（トラック #{source_track_id}）を削除して続行しますか？",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-
-            # 重複フレームの統合元アノテーションを削除
-            self._video_player._remove_track_from_frames(source_track_id, conflicts)
-
-        # トラック統合を実行
-        count = store.merge_tracks(source_track_id, target_track_id)
-
-        # _on_annotations_changed(True) が _update_track_list() を呼ぶので追加呼び出しは不要
-        self._on_annotations_changed()
-
-        self._status_bar.showMessage(
-            f"トラック #{source_track_id} → #{target_track_id} を統合しました ({count}個のアノテーション)"
-        )
 
     def _undo(self) -> None:
         """アンドゥ"""
@@ -1041,94 +817,6 @@ class MainWindow(QMainWindow):
             self._video_player.annotation_store,
         )
         dialog.exec_()
-
-    def _open_track_editor(self) -> None:
-        """トラック編集ダイアログを開く"""
-        if self._current_video_path is None:
-            QMessageBox.warning(
-                self,
-                "トラック編集",
-                "動画ファイルを開いてください。",
-            )
-            return
-
-        if len(self._video_player.annotation_store) == 0:
-            QMessageBox.warning(
-                self,
-                "トラック編集",
-                "アノテーションがありません。先にアノテーションを追加してください。",
-            )
-            return
-
-        # 進捗ダイアログを表示
-        progress_dialog = SimpleProgressDialog(
-            "統合候補を計算中",
-            "トラック情報を収集中...",
-            100,
-            self
-        )
-        progress_dialog.show()
-
-        # イベントループを作成
-        event_loop = QEventLoop()
-
-        # 結果を保存する変数
-        computed_suggestions = None
-        error_occurred = False
-
-        # バックグラウンドで統合候補を計算
-        self._merge_worker = MergeSuggestionWorker(self._video_player.annotation_store, self)
-
-        def on_progress(current, total, message):
-            progress_dialog.setValue(current)
-            progress_dialog.setMessage(message)
-
-        def on_finished(suggestions):
-            nonlocal computed_suggestions
-            computed_suggestions = suggestions
-            event_loop.quit()
-
-        def on_error(error_message):
-            nonlocal error_occurred
-            error_occurred = True
-            QMessageBox.critical(
-                self,
-                "エラー",
-                f"統合候補の計算中にエラーが発生しました:\n{error_message}"
-            )
-            event_loop.quit()
-
-        self._merge_worker.progress.connect(on_progress)
-        self._merge_worker.finished.connect(on_finished)
-        self._merge_worker.error.connect(on_error)
-        self._merge_worker.start()
-
-        # ワーカーが完了するまでイベントループで待機
-        event_loop.exec_()
-
-        # 進捗ダイアログを閉じる
-        progress_dialog.close()
-
-        # ワーカーをクリーンアップ
-        self._merge_worker.deleteLater()
-        self._merge_worker = None
-
-        # エラーが発生していなければダイアログを開く
-        if not error_occurred and computed_suggestions is not None:
-            dialog = TrackEditorDialog(
-                self,
-                self._video_player.annotation_store,
-                self._video_player.frame_count,
-                self._video_player.video_width,
-                self._video_player.video_height,
-                self._video_player.video_path,
-                self._video_player.current_frame_number,
-                computed_suggestions,
-            )
-
-            if dialog.exec_() == QDialog.Accepted:
-                self._on_annotations_changed()
-                self._status_bar.showMessage("トラック編集を適用しました")
 
     def _show_about(self) -> None:
         """Aboutダイアログ"""
