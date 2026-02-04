@@ -1327,12 +1327,15 @@ class VideoPlayerWidget(QLabel):
         self._merge_state.source_track_id = track_id
         self._merge_state.candidates = filtered
         self._merge_state.selected_idx = 0
-        self._merge_state.visible = len(filtered) > 0
+        # 候補がなくても統合ビューに入る（パラメータ調整可能にするため）
 
-        if filtered:
-            self._show_merge_candidate_ui()
-        else:
+        self._show_merge_candidate_ui()
+
+        if not filtered:
             self._show_no_candidates_toast()
+            # 候補がない場合、パラメータパネルを自動的に表示
+            if not self._params_panel.isVisible():
+                self._toggle_params_panel()
 
         self._update_display()
 
@@ -1365,13 +1368,12 @@ class VideoPlayerWidget(QLabel):
 
         self._merge_state.candidates = filtered
         self._merge_state.selected_idx = 0
-        self._merge_state.visible = len(filtered) > 0
+        # 候補がなくても統合モードは継続（ユーザーがパラメータを調整できるように）
 
-        if filtered:
-            self._update_merge_bar()
-        else:
+        self._update_merge_bar()
+
+        if not filtered:
             self._show_no_candidates_toast()
-            self._cancel_merge_mode()
 
         self._update_display()
 
