@@ -1,6 +1,7 @@
 """手動アノテーション機能"""
 
 import json
+import numpy as np
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterator, Callable
@@ -434,6 +435,73 @@ class AnnotationStore:
         self._track_annotations.pop(source_track_id, None)
 
         return count
+
+    def split_track(
+        self,
+        track_id: int,
+        split_frame: int,
+        save_undo: bool = True,
+    ) -> int | None:
+        """
+        指定トラックを指定フレーム位置で分割
+
+        Args:
+            track_id: 分割対象のトラックID
+            split_frame: 分割位置（このフレーム以降が新トラックになる）
+            save_undo: Undoスタックに保存するか
+
+        Returns:
+            新しいトラックID（成功時）、None（失敗時）
+        """
+        # トラック存在チェック
+        if track_id not in self._track_annotations:
+            return None
+
+        # split_frame以降のアノテーションを収集
+        annotations_to_move = []
+        for ann in self._track_annotations[track_id].values():
+            # ann.frameをスカラー値に変換（numpy配列の場合に対応）
+            frame_num = int(np.asarray(ann.frame).item())
+            if frame_num >= split_frame:
+                annotations_to_move.append(ann)
+
+        # 移動対象が0件または全件の場合は分割不可
+        total_count = len(self._track_annotations[track_id])
+        if len(annotations_to_move) == 0 or len(annotations_to_move) == total_count:
+            return None
+
+        # Undo状態を保存
+        if save_undo:
+            self._save_undo_state()
+
+        # 新トラックIDを生成
+        new_track_id = self.new_track_id()
+
+        # アノテーションを新トラックに移動
+        if new_track_id not in self._track_annotations:
+            self._track_annotations[new_track_id] = {}
+
+        for ann in annotations_to_move:
+            # track_idを変更
+            old_frame = ann.frame
+            ann.track_id = new_track_id
+
+            # インデックスを更新
+            self._frame_track_index.pop((old_frame, track_id), None)
+            self._frame_track_index[(old_frame, new_track_id)] = ann
+
+            # トラックアノテーションインデックスを更新
+            ann_id = id(ann)
+            self._track_annotations[track_id].pop(ann_id, None)
+            self._track_annotations[new_track_id][ann_id] = ann
+
+        # キャッシュ更新
+        moved_count = len(annotations_to_move)
+        self._track_ids.add(new_track_id)
+        self._track_count[new_track_id] = moved_count
+        self._track_count[track_id] -= moved_count
+
+        return new_track_id
 
     def interpolate_frames(
         self,

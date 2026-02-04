@@ -615,6 +615,10 @@ class VideoPlayerWidget(QLabel):
             merge_action = menu.addAction(f"トラック {ann.track_id} を別のトラックに統合...")
             merge_action.triggered.connect(lambda: self._show_merge_dialog(ann))
 
+            # 分割メニューを追加
+            split_action = menu.addAction(f"トラック {ann.track_id} をここで分割")
+            split_action.triggered.connect(lambda: self._split_track_at_current_frame(ann))
+
             menu.addSeparator()
 
         # 削除メニュー
@@ -1190,6 +1194,33 @@ class VideoPlayerWidget(QLabel):
         if ok and item:
             target_track_id = available_tracks[items.index(item)]
             self._merge_tracks(source_track_id, target_track_id)
+
+    def _split_track_at_current_frame(self, annotation: Annotation) -> None:
+        """現在のフレーム位置でトラックを分割"""
+        track_id = annotation.track_id
+        if track_id is None:
+            return
+
+        split_frame = self._current_frame_number
+
+        # トラックを分割
+        new_track_id = self._annotation_store.split_track(track_id, split_frame, save_undo=True)
+
+        if new_track_id is None:
+            self.status_message.emit(
+                f"トラック {track_id} を分割できません（分割位置の前後にアノテーションが必要です）",
+                5000,
+            )
+            return
+
+        # 成功メッセージを表示
+        self.status_message.emit(
+            f"トラック {track_id} をフレーム {split_frame} で分割しました（新トラック: {new_track_id}）",
+            5000,
+        )
+
+        # UI更新
+        self.annotations_changed.emit(True)
 
     def _merge_tracks(self, source_track_id: int, target_track_id: int) -> None:
         """トラックを統合"""
