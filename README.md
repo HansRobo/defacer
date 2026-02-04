@@ -12,70 +12,32 @@
 
 ## インストール
 
-### uvを使用（推奨）
+### pipx（推奨）
 
 ```bash
 # グローバルインストール
-uv tool install defacer
+pipx install defacer
 
-# すぐに使用可能
+# 使用
 defacer gui
+```
+
+### pip（venv内）
+
+```bash
+pip install defacer
 ```
 
 ### 開発環境
 
-#### 自動インストールスクリプト（推奨）
-
-環境（CUDA/ROCm/CPU）を自動検出して適切な依存関係をインストールします：
-
 ```bash
-# リポジトリをクローン
-git clone https://github.com/yourusername/defacer.git
-cd defacer
-
-# 環境を自動検出してインストール
-./scripts/install.sh
-
-# 仮想環境を有効化
-source .venv/bin/activate
-
-# GUIを起動
-defacer gui
-```
-
-#### インストールスクリプトのオプション
-
-```bash
-# CUDA環境を明示的に指定
-./scripts/install.sh --cuda
-
-# ROCm環境を明示的に指定
-./scripts/install.sh --rocm
-
-# CPU環境を明示的に指定
-./scripts/install.sh --cpu
-
-# 開発依存関係も含める
-./scripts/install.sh --dev
-
-# 全オプション依存関係を含める
-./scripts/install.sh --all
-```
-
-#### 手動インストール
-
-```bash
-# リポジトリをクローン
-git clone https://github.com/yourusername/defacer.git
+git clone https://github.com/kotaroyoshimoto/defacer.git
 cd defacer
 
 # 仮想環境を作成してインストール
-uv venv
+python3 -m venv .venv
 source .venv/bin/activate
-uv pip install -e .
-
-# GUIを起動
-defacer gui
+pip install -e ".[dev]"
 ```
 
 ## 必要なシステムパッケージ
@@ -140,7 +102,7 @@ defacer auto input.mp4 -o output.mp4 \
 
 ```bash
 # 全オプション機能をインストール
-uv pip install -e ".[all]"
+pip install -e ".[all]"
 ```
 
 ## ワークフロー例
@@ -184,37 +146,14 @@ QT_QPA_PLATFORM=wayland defacer gui
 
 ### GPU関連の問題
 
-#### CUDA環境
-
-CUDAドライバーとcudnnをインストール後、`./scripts/install.sh --cuda`を実行してください。
-
-#### ROCm環境
-
-**重要**: ROCm環境では、一部の新しいGPUアーキテクチャ（gfx1103: Radeon 780M など）が公式PyTorchでサポートされていません。この場合、DeepSORTトラッキングはCPUモードで動作します。
-
-**推奨事項**:
-1. **安定性優先（デフォルト）**: CPUモードで実行（追加設定不要）
-2. **GPU強制使用**: 以下の環境変数を設定してからdefacerを実行
-   ```bash
-   export DEFACER_FORCE_ROCM=1
-   export HSA_OVERRIDE_GFX_VERSION=11.0.0
-   export HSA_ENABLE_SDMA=0
-   export MIOPEN_DEBUG_CONV_DIRECT=0
-   defacer auto input.mp4 -o output.mp4
-   ```
-   ⚠️ 注意: GPU強制モードは不安定な場合があります
-
-**ROCmバージョン**:
-- PyTorch 2.5.1+rocm6.2 がインストールされています
-- システムROCm 6.3以降を推奨
-- gfx1103サポートは将来のPyTorchバージョンで改善される予定です
+デフォルトでは CPU で動作します。GPU を使用する場合は、適切な PyTorch と CUDA/ROCm をインストールしてください。
 
 ### メモリ不足エラー
 
-大きな動画を処理する場合、フレームサンプリングを調整してください：
+大きな動画を処理する場合、トラッキングを無効化することでメモリ使用量を削減できます：
 
 ```bash
-defacer auto input.mp4 -o output.mp4 --sample-rate 5
+defacer auto input.mp4 -o output.mp4 --no-tracking
 ```
 
 ## ライセンス

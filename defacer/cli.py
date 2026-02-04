@@ -12,6 +12,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from defacer import __version__
+
 
 def create_parser() -> argparse.ArgumentParser:
     """コマンドライン引数パーサーを作成"""
@@ -22,7 +24,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.2.2",
+        version=f"%(prog)s {__version__}",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")

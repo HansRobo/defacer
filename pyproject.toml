@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "defacer"
-version = "0.4.0"
+version = "0.4.1"
 description = "動画内の顔を自動検知してモザイク処理を行うソフトウェア"
 readme = "README.md"
 license = {text = "MIT"}
@@ -55,12 +55,9 @@ defacer = "defacer.cli:main"
 [project.gui-scripts]
 defacer-gui = "defacer.gui.app:main"
 
-[dependency-groups]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-qt>=4.0.0",
-    "ruff>=0.1.0",
-]
+[project.urls]
+Homepage = "https://github.com/kotaroyoshimoto/defacer"
+Repository = "https://github.com/kotaroyoshimoto/defacer"
 
 [tool.hatch.build.targets.wheel]
 packages = ["defacer"]
