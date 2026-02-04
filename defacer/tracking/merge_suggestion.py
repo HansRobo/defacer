@@ -143,6 +143,7 @@ def compute_merge_suggestions(
     max_time_gap: int = 60,
     max_position_distance: float = 200.0,
     min_confidence: float = 0.5,
+    progress_callback=None,
 ) -> list[MergeSuggestion]:
     """
     統合候補を自動検出（複数トラック対応・高速化版）
@@ -158,35 +159,60 @@ def compute_merge_suggestions(
         max_time_gap: 最大時間差（フレーム数）
         max_position_distance: 最大位置差（ピクセル）
         min_confidence: 最小信頼度
+        progress_callback: 進捗コールバック (current, total, message) -> None
 
     Returns:
         統合サジェストのリスト（信頼度の高い順、複数トラック含む）
     """
+    if progress_callback:
+        progress_callback(0, 100, "トラック情報を収集中...")
+
     track_infos = collect_track_infos(store)
 
     if len(track_infos) < 2:
         return []
 
-    # ステップ1: ペアワイズの統合候補を検出
-    pairwise_candidates = []  # (track_id_a, track_id_b, confidence, time_gap, pos_distance)
+    if progress_callback:
+        progress_callback(10, 100, f"{len(track_infos)}トラックを分析中...")
 
-    for i in range(len(track_infos)):
-        track_a = track_infos[i]
+    # ステップ1: 終了フレームでソートしたインデックスを作成（高速化のため）
+    # トラックの終了フレームをキーにして、そのフレーム以降に開始するトラックを効率的に検索
+    track_by_end_frame = sorted(track_infos, key=lambda t: t.frame_max)
+    track_by_start_frame = sorted(track_infos, key=lambda t: t.frame_min)
 
-        for j in range(i + 1, len(track_infos)):
-            track_b = track_infos[j]
+    # 各トラックの開始フレームでバイナリサーチ用のリストを作成
+    start_frames = [t.frame_min for t in track_by_start_frame]
 
-            # トラックBの開始がトラックAの終了より前なら次へ
-            if track_b.frame_min <= track_a.frame_max:
+    # ステップ2: ペアワイズの統合候補を検出（最適化版）
+    pairwise_candidates = []
+
+    import bisect
+
+    total_tracks = len(track_by_end_frame)
+    for idx, track_a in enumerate(track_by_end_frame):
+        if progress_callback and idx % 100 == 0:
+            progress = 10 + int(idx / total_tracks * 60)
+            progress_callback(progress, 100, f"ペア検出中 ({idx}/{total_tracks})...")
+
+        # track_aの終了フレーム以降に開始するトラックを効率的に検索
+        search_start = track_a.frame_max + 1
+        search_end = track_a.frame_max + max_time_gap + 1
+
+        # バイナリサーチで候補範囲を特定
+        left_idx = bisect.bisect_left(start_frames, search_start)
+        right_idx = bisect.bisect_right(start_frames, search_end)
+
+        # 候補範囲内のトラックのみを検査
+        for j in range(left_idx, right_idx):
+            track_b = track_by_start_frame[j]
+
+            # 自分自身はスキップ
+            if track_b.track_id == track_a.track_id:
                 continue
 
             time_gap = track_b.frame_min - track_a.frame_max
 
-            # 時間差がしきい値を超えたら早期終了
-            if time_gap > max_time_gap:
-                break
-
-            # 粗い位置チェック
+            # 粗い位置チェック（マンハッタン距離で高速フィルタ）
             ax1, ay1, ax2, ay2 = track_a.last_bbox
             bx1, by1, bx2, by2 = track_b.first_bbox
             a_center_x, a_center_y = (ax1 + ax2) / 2, (ay1 + ay2) / 2
@@ -206,7 +232,6 @@ def compute_merge_suggestions(
             size_a = _bbox_size(track_a.last_bbox)
             size_b = _bbox_size(track_b.first_bbox)
 
-            # サイズが0の場合はスキップ（無効なバウンディングボックス）
             max_width = max(size_a[0], size_b[0])
             if max_width == 0:
                 continue
@@ -223,34 +248,40 @@ def compute_merge_suggestions(
                 (track_a.track_id, track_b.track_id, confidence, time_gap, position_distance)
             )
 
+    if progress_callback:
+        progress_callback(70, 100, f"{len(pairwise_candidates)}ペアをグループ化中...")
+
     if not pairwise_candidates:
         return []
 
-    # ステップ2: Union-Findでトラックをグループ化
+    # ステップ3: Union-Findでトラックをグループ化
     all_track_ids = [info.track_id for info in track_infos]
     uf = UnionFind(all_track_ids)
 
-    # 信頼度の高いペアから順に統合
     pairwise_candidates.sort(key=lambda x: x[2], reverse=True)
-    pair_info = {}  # (track_a, track_b) -> (confidence, time_gap, pos_distance)
+    pair_info = {}
 
     for track_a, track_b, conf, tg, pd in pairwise_candidates:
         uf.union(track_a, track_b)
         pair_info[(track_a, track_b)] = (conf, tg, pd)
 
-    # ステップ3: グループごとに統合サジェストを作成
+    if progress_callback:
+        progress_callback(85, 100, "統合候補を生成中...")
+
+    # ステップ4: グループごとに統合サジェストを作成
     groups = uf.get_groups()
     suggestions = []
 
+    # track_id -> frame_min のマッピング（高速化）
+    track_id_to_frame_min = {info.track_id: info.frame_min for info in track_infos}
+
     for root, group_track_ids in groups.items():
-        # 単一トラックのグループはスキップ
         if len(group_track_ids) < 2:
             continue
 
-        # トラックを時系列でソート
-        group_track_ids.sort(key=lambda tid: next(info.frame_min for info in track_infos if info.track_id == tid))
+        # 時系列でソート（高速化版）
+        group_track_ids.sort(key=lambda tid: track_id_to_frame_min[tid])
 
-        # グループ内のペア情報を収集
         confidences = []
         time_gaps = []
         position_distances = []
@@ -259,20 +290,16 @@ def compute_merge_suggestions(
             track_a = group_track_ids[i]
             track_b = group_track_ids[i + 1]
 
-            # ペア情報を取得
             if (track_a, track_b) in pair_info:
                 conf, tg, pd = pair_info[(track_a, track_b)]
                 confidences.append(conf)
                 time_gaps.append(tg)
                 position_distances.append(pd)
             else:
-                # 直接接続されていないペア（間接的にグループ化された）
-                # デフォルト値を使用
                 confidences.append(min_confidence)
                 time_gaps.append(0)
                 position_distances.append(0.0)
 
-        # グループ全体の平均信頼度
         avg_confidence = sum(confidences) / len(confidences) if confidences else min_confidence
 
         suggestion = MergeSuggestion(
@@ -283,7 +310,9 @@ def compute_merge_suggestions(
         )
         suggestions.append(suggestion)
 
-    # 信頼度の高い順にソート
     suggestions.sort(key=lambda s: s.confidence, reverse=True)
+
+    if progress_callback:
+        progress_callback(100, 100, "完了")
 
     return suggestions

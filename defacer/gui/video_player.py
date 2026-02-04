@@ -728,6 +728,11 @@ class VideoPlayerWidget(QLabel):
         return self._reader.height if self._reader else 0
 
     @property
+    def video_path(self) -> str | None:
+        """動画ファイルパスを取得"""
+        return str(self._reader.path) if self._reader else None
+
+    @property
     def selected_annotation(self) -> Annotation | None:
         return self._selected_annotation
 

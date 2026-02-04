@@ -54,7 +54,11 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QDialog,
+    QProgressDialog,
+    QProgressBar,
 )
+
+from PyQt5.QtCore import QThread, pyqtSignal, QEventLoop
 
 from defacer.gui.video_player import VideoPlayerWidget
 from defacer.gui.timeline import TimelineWidget
@@ -64,7 +68,87 @@ from defacer.gui.detection_dialog import DetectionDialog
 from defacer.gui.track_editor import TrackEditorDialog
 from defacer.gui.retrack_dialog import RetrackDialog
 from defacer.tracking.interpolation import interpolate_track
+from defacer.tracking.merge_suggestion import compute_merge_suggestions
 from defacer.detection import get_available_detectors
+
+
+class SimpleProgressDialog(QDialog):
+    """シンプルで確実に動作するプログレスダイアログ"""
+
+    def __init__(self, title: str, message: str, maximum: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(120)
+
+        # レイアウト
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # メッセージラベル
+        self._label = QLabel(message)
+        layout.addWidget(self._label)
+
+        # プログレスバー
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setMinimum(0)
+        self._progress_bar.setMaximum(maximum)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setTextVisible(True)
+        layout.addWidget(self._progress_bar)
+
+        # キャンセルボタン
+        self._cancel_button = QPushButton("キャンセル")
+        self._cancel_button.clicked.connect(self.reject)
+        layout.addWidget(self._cancel_button)
+
+        self._cancelled = False
+
+    def setValue(self, value: int) -> None:
+        """進捗値を設定"""
+        self._progress_bar.setValue(value)
+
+    def wasCanceled(self) -> bool:
+        """キャンセルされたか確認"""
+        return self._cancelled
+
+    def setMessage(self, message: str) -> None:
+        """メッセージを更新"""
+        self._label.setText(message)
+
+    def reject(self) -> None:
+        """キャンセル処理"""
+        self._cancelled = True
+        super().reject()
+
+
+class MergeSuggestionWorker(QThread):
+    """統合候補計算ワーカー"""
+
+    progress = pyqtSignal(int, int, str)  # current, total, message
+    finished = pyqtSignal(list)  # suggestions
+    error = pyqtSignal(str)  # error_message
+
+    def __init__(self, store, parent=None):
+        super().__init__(parent)
+        self._store = store
+
+    def run(self):
+        """バックグラウンド実行"""
+        try:
+            suggestions = compute_merge_suggestions(
+                self._store,
+                progress_callback=self._on_progress
+            )
+            self.finished.emit(suggestions)
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _on_progress(self, current, total, message):
+        """進捗コールバック"""
+        self.progress.emit(current, total, message)
 
 
 class MainWindow(QMainWindow):
@@ -137,6 +221,12 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("動画ファイルを開いてください (Ctrl+O)")
+
+        # ステータスバー用プログレスバー（初期は非表示）
+        self._status_progress_bar = QProgressBar()
+        self._status_progress_bar.setMaximumWidth(300)
+        self._status_progress_bar.setVisible(False)
+        self._status_bar.addPermanentWidget(self._status_progress_bar)
 
     def _create_side_panel(self) -> QWidget:
         """サイドパネルを作成"""
@@ -669,24 +759,33 @@ class MainWindow(QMainWindow):
         store = self._video_player.annotation_store
         track_ids = sorted(store.get_all_track_ids())
 
-        self._track_table.setRowCount(len(track_ids))
+        # テーブル更新中はUI更新を無効化して高速化
+        self._track_table.setUpdatesEnabled(False)
+        self._track_table.blockSignals(True)
 
-        for row, track_id in enumerate(track_ids):
-            info = store.get_track_info(track_id)
+        try:
+            self._track_table.setRowCount(len(track_ids))
 
-            # トラックID
-            id_item = QTableWidgetItem(f"#{track_id}")
-            id_item.setData(Qt.UserRole, track_id)
-            self._track_table.setItem(row, 0, id_item)
+            for row, track_id in enumerate(track_ids):
+                info = store.get_track_info(track_id)
 
-            # フレーム範囲
-            frame_range = f"{info['frame_min']}-{info['frame_max']}"
-            range_item = QTableWidgetItem(frame_range)
-            self._track_table.setItem(row, 1, range_item)
+                # トラックID
+                id_item = QTableWidgetItem(f"#{track_id}")
+                id_item.setData(Qt.UserRole, track_id)
+                self._track_table.setItem(row, 0, id_item)
 
-            # アノテーション数
-            count_item = QTableWidgetItem(str(info['annotation_count']))
-            self._track_table.setItem(row, 2, count_item)
+                # フレーム範囲
+                frame_range = f"{info['frame_min']}-{info['frame_max']}"
+                range_item = QTableWidgetItem(frame_range)
+                self._track_table.setItem(row, 1, range_item)
+
+                # アノテーション数
+                count_item = QTableWidgetItem(str(info['annotation_count']))
+                self._track_table.setItem(row, 2, count_item)
+        finally:
+            # UI更新を再有効化
+            self._track_table.blockSignals(False)
+            self._track_table.setUpdatesEnabled(True)
 
         # 選択状態に応じてボタンを有効化
         self._track_table.itemSelectionChanged.connect(self._on_track_selection_changed)
@@ -864,13 +963,40 @@ class MainWindow(QMainWindow):
     def _on_detections_ready(self, new_store: AnnotationStore) -> None:
         """検出結果を受け取ってマージ"""
         current_store = self._video_player.annotation_store
+        total_count = len(new_store)
 
-        # 新しい検出結果をマージ
-        for ann in new_store:
+        # Undo状態を保存（バッチ処理の前に1回だけ）
+        current_store._save_undo_state()
+
+        # 大量のアノテーションがある場合はステータスバーに進捗を表示
+        show_progress = total_count > 100
+        if show_progress:
+            self._status_progress_bar.setMaximum(total_count)
+            self._status_progress_bar.setValue(0)
+            self._status_progress_bar.setVisible(True)
+            self._status_bar.showMessage("検出結果をマージ中...")
+            QApplication.processEvents()
+
+        # 新しい検出結果をマージ（save_undo=Falseで高速化）
+        for idx, ann in enumerate(new_store):
+            # プログレスバーの更新（10件ごとに更新してUIフリーズ防止）
+            if show_progress and idx % 10 == 0:
+                self._status_progress_bar.setValue(idx)
+                # パーセント表示も更新
+                percent = int((idx / total_count) * 100)
+                self._status_bar.showMessage(f"検出結果をマージ中... {percent}% ({idx}/{total_count})")
+                QApplication.processEvents()
+
             # 既存のトラックIDと衝突しないように調整
             ann.track_id = current_store.new_track_id()
-            current_store.add(ann)
+            current_store.add(ann, save_undo=False)
 
+        # プログレスバーを隠す
+        if show_progress:
+            self._status_progress_bar.setValue(total_count)
+            self._status_progress_bar.setVisible(False)
+
+        # 処理完了後に一度だけUI更新
         self._on_annotations_changed()
         self._status_bar.showMessage(f"{len(new_store)}件の検出結果を追加しました")
 
@@ -953,32 +1079,88 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dialog = TrackEditorDialog(
-            self,
-            self._video_player.annotation_store,
-            self._video_player.frame_count,
-            self._video_player.video_width,
-            self._video_player.video_height,
-            self._video_player.current_frame_number,
+        # 進捗ダイアログを表示
+        progress_dialog = SimpleProgressDialog(
+            "統合候補を計算中",
+            "トラック情報を収集中...",
+            100,
+            self
         )
+        progress_dialog.show()
 
-        if dialog.exec_() == QDialog.Accepted:
-            # 変更が適用された
-            self._on_annotations_changed()
-            self._status_bar.showMessage("トラック編集を適用しました")
+        # イベントループを作成
+        event_loop = QEventLoop()
+
+        # 結果を保存する変数
+        computed_suggestions = None
+        error_occurred = False
+
+        # バックグラウンドで統合候補を計算
+        self._merge_worker = MergeSuggestionWorker(self._video_player.annotation_store, self)
+
+        def on_progress(current, total, message):
+            progress_dialog.setValue(current)
+            progress_dialog.setMessage(message)
+
+        def on_finished(suggestions):
+            nonlocal computed_suggestions
+            computed_suggestions = suggestions
+            event_loop.quit()
+
+        def on_error(error_message):
+            nonlocal error_occurred
+            error_occurred = True
+            QMessageBox.critical(
+                self,
+                "エラー",
+                f"統合候補の計算中にエラーが発生しました:\n{error_message}"
+            )
+            event_loop.quit()
+
+        self._merge_worker.progress.connect(on_progress)
+        self._merge_worker.finished.connect(on_finished)
+        self._merge_worker.error.connect(on_error)
+        self._merge_worker.start()
+
+        # ワーカーが完了するまでイベントループで待機
+        event_loop.exec_()
+
+        # 進捗ダイアログを閉じる
+        progress_dialog.close()
+
+        # ワーカーをクリーンアップ
+        self._merge_worker.deleteLater()
+        self._merge_worker = None
+
+        # エラーが発生していなければダイアログを開く
+        if not error_occurred and computed_suggestions is not None:
+            dialog = TrackEditorDialog(
+                self,
+                self._video_player.annotation_store,
+                self._video_player.frame_count,
+                self._video_player.video_width,
+                self._video_player.video_height,
+                self._video_player.video_path,
+                self._video_player.current_frame_number,
+                computed_suggestions,
+            )
+
+            if dialog.exec_() == QDialog.Accepted:
+                self._on_annotations_changed()
+                self._status_bar.showMessage("トラック編集を適用しました")
 
     def _show_about(self) -> None:
         """Aboutダイアログ"""
         QMessageBox.about(
             self,
             "Defacerについて",
-            "Defacer v0.2.0\n\n"
+            "Defacer v0.3.1\n\n"
             "動画内の顔を自動検知してモザイク処理を行うソフトウェア\n\n"
             "検知漏れがある場合は手動で顔領域を指定できます。\n\n"
-            "v0.2.0の新機能:\n"
-            "- トラック編集専用画面\n"
-            "- 複数トラック選択と一括統合\n"
-            "- 自動統合サジェスト（連鎖トラック検出）",
+            "v0.3.1の新機能:\n"
+            "- トラック編集モードの状態管理改善\n"
+            "- 統合・再マッチング後のUI更新を完全に\n"
+            "- サムネイルキャッシュと選択状態の適切なクリア",
         )
 
     def _show_shortcuts(self) -> None:

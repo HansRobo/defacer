@@ -98,8 +98,9 @@ class DeepSORTFaceTracker(FaceTracker):
             h = y2 - y1
             dets.append(([x1, y1, w, h], det.confidence, "face"))
 
-        # トラッカーを更新
-        tracks = self._tracker.update_tracks(dets, frame=frame)
+        # トラッカーを更新（othersで検出インデックスを渡す）
+        others = list(range(len(dets)))
+        tracks = self._tracker.update_tracks(dets, frame=frame, others=others)
 
         tracked_faces = []
         for track in tracks:
@@ -107,12 +108,33 @@ class DeepSORTFaceTracker(FaceTracker):
                 continue
 
             track_id = track.track_id
-            ltrb = track.to_ltrb()  # [x1, y1, x2, y2]
+            has_detection = track.time_since_update == 0
+
+            # 検出がないトラックは無視（予測bboxを使用しない）
+            if not has_detection:
+                continue
+
+            # 検出に対応するトラックのみ処理
+            if track.others is not None:
+                # 検出がある場合は元のDetectionのbboxをそのまま使用
+                det_idx = track.others
+                if 0 <= det_idx < len(detections):
+                    original_det = detections[det_idx]
+                    bbox = original_det.bbox  # そのまま使用
+                    confidence = original_det.confidence
+                else:
+                    # フォールバック
+                    ltrb = track.to_ltrb(orig=True)
+                    bbox = (int(ltrb[0]), int(ltrb[1]), int(ltrb[2]), int(ltrb[3]))
+                    confidence = track.det_conf if track.det_conf is not None else 1.0
+            else:
+                # othersがない場合もスキップ（検出データがない）
+                continue
 
             tracked_face = TrackedFace(
                 track_id=int(track_id),
-                bbox=(int(ltrb[0]), int(ltrb[1]), int(ltrb[2]), int(ltrb[3])),
-                confidence=1.0,
+                bbox=bbox,
+                confidence=confidence,
                 age=track.time_since_update,
             )
             tracked_faces.append(tracked_face)
