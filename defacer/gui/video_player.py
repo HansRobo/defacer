@@ -115,6 +115,7 @@ class VideoPlayerWidget(QLabel):
         self._drawing_rect: BoundingBox | None = None
         self._mouse_start: tuple[int, int] | None = None
         self._is_drawing = False
+        self._pending_draw_start: tuple[int, int] | None = None  # 描画開始候補
 
         # 編集中の状態
         self._edit_mode = self.MODE_DRAW
@@ -148,15 +149,9 @@ class VideoPlayerWidget(QLabel):
         self._update_display()
 
     def set_edit_mode(self, mode: str) -> None:
-        """編集モードを設定"""
-        self._edit_mode = mode
-        if mode == self.MODE_VIEW:
-            self._selected_annotation = None
-            self._selected_index = -1
-            self._hide_toolbar()
-        elif mode != self.MODE_EDIT:
-            self._hide_toolbar()
-        self._update_display()
+        """編集モードを設定（モードレス化により、外部呼び出しは無視）"""
+        # モードレス化: 常に統合モードで動作するため、外部からの呼び出しは無視
+        pass
 
     def set_auto_interpolate(self, enabled: bool) -> None:
         """自動補間モードを設定"""
@@ -285,8 +280,8 @@ class VideoPlayerWidget(QLabel):
         if ann.track_id is not None:
             self._draw_track_label(painter, ann.bbox, ann.track_id, QColor(r, g, b))
 
-        # 選択時はリサイズハンドルを描画
-        if is_selected and self._edit_mode == self.MODE_EDIT:
+        # 選択時はリサイズハンドルを描画（モードレス: 常に表示）
+        if is_selected:
             self._draw_resize_handles(painter, ann.bbox)
 
     def _draw_track_label(self, painter: QPainter, bbox: BoundingBox, track_id: int, color: QColor) -> None:
@@ -417,7 +412,7 @@ class VideoPlayerWidget(QLabel):
         menu.exec_(event.globalPos())
 
     def mousePressEvent(self, event) -> None:
-        """マウスボタン押下"""
+        """マウスボタン押下（モードレス統合版）"""
         if event.button() != Qt.LeftButton:
             return
 
@@ -427,57 +422,47 @@ class VideoPlayerWidget(QLabel):
 
         x, y = coords
 
-        if self._edit_mode == self.MODE_VIEW:
-            return
-
-        if self._edit_mode == self.MODE_EDIT:
-            # 選択中のアノテーションのリサイズハンドルをチェック
-            if self._selected_annotation:
-                handle = self._selected_annotation.bbox.get_resize_handle(
-                    x, y, int(10 / self._scale)
-                )
-                if handle:
-                    self._resize_handle = handle
-                    self._drag_start = coords
-                    return
-
-            # アノテーションの選択/移動
-            result = self._annotation_store.get_annotation_at_point(
-                self._current_frame_number, x, y
+        # 1. リサイズハンドルチェック（最優先）
+        if self._selected_annotation:
+            handle = self._selected_annotation.bbox.get_resize_handle(
+                x, y, int(10 / self._scale)
             )
-            if result:
-                ann, idx = result
-                self._selected_annotation = ann
-                self._selected_index = idx
+            if handle:
+                self._resize_handle = handle
                 self._drag_start = coords
-                self._drag_offset = (x - ann.bbox.x1, y - ann.bbox.y1)
-                self.annotation_selected.emit(ann)
-                self._update_display()
-                self._show_toolbar()
                 return
 
-            # 何もない場所をクリック→選択解除
-            self._selected_annotation = None
-            self._selected_index = -1
-            self.annotation_selected.emit(None)
-            self._hide_toolbar()
+        # 2. アノテーション上をクリック → 選択＆移動準備
+        result = self._annotation_store.get_annotation_at_point(
+            self._current_frame_number, x, y
+        )
+        if result:
+            ann, idx = result
+            self._selected_annotation = ann
+            self._selected_index = idx
+            self._drag_start = coords
+            self._drag_offset = (x - ann.bbox.x1, y - ann.bbox.y1)
+            self.annotation_selected.emit(ann)
             self._update_display()
-
-        elif self._edit_mode == self.MODE_DRAW:
-            # 新規描画開始
-            self._is_drawing = True
-            self._mouse_start = coords
-            self._drawing_rect = BoundingBox(x, y, x, y)
-
-    def mouseMoveEvent(self, event) -> None:
-        """マウス移動"""
-        coords = self._widget_to_frame_coords(event.x(), event.y())
-
-        if self._edit_mode == self.MODE_VIEW:
+            self._show_toolbar()
             return
 
+        # 3. 空白領域をクリック → 選択解除 OR 描画準備
+        self._selected_annotation = None
+        self._selected_index = -1
+        self.annotation_selected.emit(None)
+        self._hide_toolbar()
+        self._update_display()
+
+        # 描画開始候補として座標を保存（移動後に判定）
+        self._pending_draw_start = coords
+
+    def mouseMoveEvent(self, event) -> None:
+        """マウス移動（モードレス統合版）"""
+        coords = self._widget_to_frame_coords(event.x(), event.y())
+
         # カーソル形状の更新
-        if self._edit_mode == self.MODE_EDIT and coords:
+        if coords:
             self._update_cursor(coords[0], coords[1])
 
         if coords is None:
@@ -485,65 +470,87 @@ class VideoPlayerWidget(QLabel):
 
         x, y = coords
 
-        if self._edit_mode == self.MODE_DRAW and self._is_drawing:
-            # 描画中
-            if self._mouse_start:
+        # 描画開始候補がある場合、5px以上移動したら描画開始
+        if self._pending_draw_start and not self._is_drawing:
+            dx = abs(x - self._pending_draw_start[0])
+            dy = abs(y - self._pending_draw_start[1])
+            if dx > 5 or dy > 5:
+                self._is_drawing = True
+                self._mouse_start = self._pending_draw_start
+                self._pending_draw_start = None
                 self._drawing_rect = BoundingBox(
                     self._mouse_start[0], self._mouse_start[1], x, y
                 ).normalize()
                 self._update_display()
+                return
 
-        elif self._edit_mode == self.MODE_EDIT:
-            if self._resize_handle and self._selected_annotation and self._drag_start:
-                # リサイズ中
-                self._resize_annotation(x, y)
-                self._update_display()
-            elif self._drag_start and self._selected_annotation:
-                # 移動中
-                new_x1 = x - self._drag_offset[0]
-                new_y1 = y - self._drag_offset[1]
-                new_x2 = new_x1 + self._selected_annotation.bbox.width
-                new_y2 = new_y1 + self._selected_annotation.bbox.height
+        # リサイズ中
+        if self._resize_handle and self._selected_annotation and self._drag_start:
+            self._resize_annotation(x, y)
+            self._update_display()
+            return
 
-                self._selected_annotation.bbox = BoundingBox(
-                    new_x1, new_y1, new_x2, new_y2
-                ).clamp(self._reader.width, self._reader.height)
-                self._update_display()
+        # 移動中
+        if self._drag_start and self._selected_annotation:
+            new_x1 = x - self._drag_offset[0]
+            new_y1 = y - self._drag_offset[1]
+            new_x2 = new_x1 + self._selected_annotation.bbox.width
+            new_y2 = new_y1 + self._selected_annotation.bbox.height
+
+            self._selected_annotation.bbox = BoundingBox(
+                new_x1, new_y1, new_x2, new_y2
+            ).clamp(self._reader.width, self._reader.height)
+            self._update_display()
+            return
+
+        # 描画中
+        if self._is_drawing and self._mouse_start:
+            self._drawing_rect = BoundingBox(
+                self._mouse_start[0], self._mouse_start[1], x, y
+            ).normalize()
+            self._update_display()
 
     def mouseReleaseEvent(self, event) -> None:
-        """マウスボタン解放"""
+        """マウスボタン解放（モードレス統合版）"""
         if event.button() != Qt.LeftButton:
             return
 
-        if self._edit_mode == self.MODE_DRAW and self._is_drawing:
-            # 描画完了
-            if self._drawing_rect and self._drawing_rect.area > 100:
+        # 描画完了処理（閾値強化: area > 400 かつ width > 15 and height > 15）
+        if self._is_drawing:
+            if self._drawing_rect:
+                # まず正規化してから閾値チェック（どの方向のドラッグでも対応）
                 normalized = self._drawing_rect.normalize()
-                if self._reader:
-                    normalized = normalized.clamp(self._reader.width, self._reader.height)
+                if (normalized.area > 400 and
+                    normalized.width > 15 and
+                    normalized.height > 15):
+                    if self._reader:
+                        normalized = normalized.clamp(self._reader.width, self._reader.height)
 
-                ann = Annotation(
-                    frame=self._current_frame_number,
-                    bbox=normalized,
-                    track_id=self._annotation_store.new_track_id(),
-                    is_manual=True,
-                )
-                self._annotation_store.add(ann)
-                self.annotation_added.emit(ann)
-                self.annotations_changed.emit(True)  # 構造変更
+                    ann = Annotation(
+                        frame=self._current_frame_number,
+                        bbox=normalized,
+                        track_id=self._annotation_store.new_track_id(),
+                        is_manual=True,
+                    )
+                    self._annotation_store.add(ann)
+                    self.annotation_added.emit(ann)
+                    self.annotations_changed.emit(True)  # 構造変更
 
             self._drawing_rect = None
             self._is_drawing = False
             self._mouse_start = None
             self._update_display()
 
-        elif self._edit_mode == self.MODE_EDIT:
-            if self._resize_handle or self._drag_start:
-                # 編集完了（位置変更のみ、トラック構造は不変）
-                self.annotations_changed.emit(False)
+        # 編集完了処理
+        if self._resize_handle or self._drag_start:
+            # 編集完了（位置変更のみ、トラック構造は不変）
+            self.annotations_changed.emit(False)
+            self._update_display()
 
-            self._resize_handle = None
-            self._drag_start = None
+        # 状態リセット
+        self._pending_draw_start = None
+        self._resize_handle = None
+        self._drag_start = None
 
     def _resize_annotation(self, x: int, y: int) -> None:
         """アノテーションをリサイズ"""
@@ -570,7 +577,8 @@ class VideoPlayerWidget(QLabel):
             self._selected_annotation.bbox = new_bbox
 
     def _update_cursor(self, x: int, y: int) -> None:
-        """カーソル形状を更新"""
+        """カーソル形状を更新（モードレス統合版）"""
+        # 選択中のアノテーションがある場合
         if self._selected_annotation:
             handle = self._selected_annotation.bbox.get_resize_handle(x, y, int(10 / self._scale))
             if handle:
@@ -591,7 +599,14 @@ class VideoPlayerWidget(QLabel):
                 self.setCursor(Qt.SizeAllCursor)
                 return
 
-        self.setCursor(Qt.CrossCursor if self._edit_mode == self.MODE_DRAW else Qt.ArrowCursor)
+        # アノテーション上ならポインター、空白領域なら十字
+        result = self._annotation_store.get_annotation_at_point(
+            self._current_frame_number, x, y
+        )
+        if result:
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            self.setCursor(Qt.CrossCursor)
 
     def keyPressEvent(self, event) -> None:
         """キー入力"""
@@ -609,9 +624,9 @@ class VideoPlayerWidget(QLabel):
                 self._update_display()
             return
 
-        # 矢印キーによる微調整（EDIT モードかつ選択中のみ）
+        # 矢印キーによる微調整（選択中のみ）
         if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
-            if self._selected_annotation and self._edit_mode == self.MODE_EDIT:
+            if self._selected_annotation:
                 # 最初のキー押下時のみフラグをセット
                 if not event.isAutoRepeat():
                     self._is_nudging = True
@@ -690,8 +705,8 @@ class VideoPlayerWidget(QLabel):
         self._update_display()
 
     def _show_toolbar(self) -> None:
-        """ツールバーを表示"""
-        if not self._selected_annotation or self._edit_mode != self.MODE_EDIT:
+        """ツールバーを表示（モードレス: 常に表示可能）"""
+        if not self._selected_annotation:
             return
 
         self._update_toolbar_position()

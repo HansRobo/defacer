@@ -12,4 +12,4 @@ for key in list(os.environ.keys()):
 # OpenCVのQtプラグインディレクトリを使用しないようにする
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
 
-__version__ = "0.3.1"
+__version__ = "0.3.3"

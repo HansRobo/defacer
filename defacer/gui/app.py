@@ -258,21 +258,6 @@ class MainWindow(QMainWindow):
         self._annotation_count = QLabel("領域数: 0 (現フレーム: 0)")
         annotation_layout.addWidget(self._annotation_count)
 
-        # モードボタン
-        mode_layout = QHBoxLayout()
-        self._draw_mode_btn = QPushButton("描画")
-        self._draw_mode_btn.setCheckable(True)
-        self._draw_mode_btn.setChecked(True)
-        self._draw_mode_btn.clicked.connect(lambda: self._set_edit_mode("draw"))
-
-        self._edit_mode_btn = QPushButton("編集")
-        self._edit_mode_btn.setCheckable(True)
-        self._edit_mode_btn.clicked.connect(lambda: self._set_edit_mode("edit"))
-
-        mode_layout.addWidget(self._draw_mode_btn)
-        mode_layout.addWidget(self._edit_mode_btn)
-        annotation_layout.addLayout(mode_layout)
-
         # アノテーション操作ボタン
         self._delete_btn = QPushButton("選択を削除")
         self._delete_btn.clicked.connect(self._delete_selected)
@@ -454,29 +439,6 @@ class MainWindow(QMainWindow):
         track_editor_action.triggered.connect(self._open_track_editor)
         edit_menu.addAction(track_editor_action)
 
-        edit_menu.addSeparator()
-
-        # 編集モード
-        mode_menu = edit_menu.addMenu("編集モード(&M)")
-        mode_group = QActionGroup(self)
-
-        draw_action = QAction("描画モード", self)
-        draw_action.setCheckable(True)
-        draw_action.setChecked(True)
-        draw_action.setShortcut("D")
-        draw_action.triggered.connect(lambda: self._set_edit_mode("draw"))
-        mode_group.addAction(draw_action)
-        mode_menu.addAction(draw_action)
-        self._draw_action = draw_action
-
-        edit_action = QAction("編集モード", self)
-        edit_action.setCheckable(True)
-        edit_action.setShortcut("E")
-        edit_action.triggered.connect(lambda: self._set_edit_mode("edit"))
-        mode_group.addAction(edit_action)
-        mode_menu.addAction(edit_action)
-        self._edit_action = edit_action
-
         # 再生メニュー
         playback_menu = menubar.addMenu("再生(&P)")
 
@@ -511,7 +473,7 @@ class MainWindow(QMainWindow):
         next_10_action.triggered.connect(lambda: self._video_player.step_forward(10))
         playback_menu.addAction(next_10_action)
 
-        # A/Dキーショートカット
+        # A/Dキーショートカット（次フレーム移動専用）
         prev_frame_a = QAction("前のフレーム (A)", self)
         prev_frame_a.setShortcut("A")
         prev_frame_a.triggered.connect(lambda: self._video_player.step_backward(1))
@@ -520,8 +482,6 @@ class MainWindow(QMainWindow):
         next_frame_d = QAction("次のフレーム (D)", self)
         next_frame_d.setShortcut("D")
         next_frame_d.triggered.connect(lambda: self._video_player.step_forward(1))
-        # Dキーは描画モードと競合するので、非表示にするがショートカットは有効
-        next_frame_d.setVisible(False)
         playback_menu.addAction(next_frame_d)
 
         # ヘルプメニュー
@@ -559,22 +519,6 @@ class MainWindow(QMainWindow):
         track_editor_action.triggered.connect(self._open_track_editor)
         toolbar.addAction(track_editor_action)
 
-        toolbar.addSeparator()
-
-        # 編集モードボタン
-        draw_action = QAction("描画", self)
-        draw_action.setCheckable(True)
-        draw_action.setChecked(True)
-        draw_action.triggered.connect(lambda: self._set_edit_mode("draw"))
-        toolbar.addAction(draw_action)
-        self._toolbar_draw_action = draw_action
-
-        edit_action = QAction("編集", self)
-        edit_action.setCheckable(True)
-        edit_action.triggered.connect(lambda: self._set_edit_mode("edit"))
-        toolbar.addAction(edit_action)
-        self._toolbar_edit_action = edit_action
-
     def _setup_shortcuts(self) -> None:
         """追加のキーボードショートカットを設定"""
         # Fキーで次フレームにコピー
@@ -582,21 +526,6 @@ class MainWindow(QMainWindow):
         copy_action.setShortcut("F")
         copy_action.triggered.connect(self._copy_to_next_frame)
         self.addAction(copy_action)
-
-    def _set_edit_mode(self, mode: str) -> None:
-        """編集モードを設定"""
-        is_draw = mode == "draw"
-        self._draw_mode_btn.setChecked(is_draw)
-        self._edit_mode_btn.setChecked(not is_draw)
-        self._draw_action.setChecked(is_draw)
-        self._edit_action.setChecked(not is_draw)
-        self._toolbar_draw_action.setChecked(is_draw)
-        self._toolbar_edit_action.setChecked(not is_draw)
-
-        if mode == "draw":
-            self._video_player.set_edit_mode(VideoPlayerWidget.MODE_DRAW)
-        else:
-            self._video_player.set_edit_mode(VideoPlayerWidget.MODE_EDIT)
 
     def _on_open(self) -> None:
         """動画ファイルを開くダイアログ"""
