@@ -149,7 +149,9 @@ class AnnotationStore:
     progress_callback: Callable[[int, int], None] | None = None
 
     def _rebuild_cache(self) -> None:
-        """キャッシュを再構築"""
+        """キャッシュを再構築（重複除去も実施）"""
+        import logging
+
         self._total_count = 0
         self._track_ids.clear()
         self._track_count.clear()
@@ -158,14 +160,35 @@ class AnnotationStore:
 
         frames = list(self.annotations.items())
         total = len(frames)
+        total_duplicates_removed = 0
 
         for i, (frame, anns) in enumerate(frames):
             # 進捗通知（100フレームごと）
             if self.progress_callback and total > 100 and i % 100 == 0:
                 self.progress_callback(i, total)
 
-            self._total_count += len(anns)
+            # 重複除去: (frame, track_id) の組み合わせが重複している場合、先勝ちで保持
+            seen_track_ids = set()
+            cleaned_anns = []
+            duplicates_in_frame = 0
+
             for ann in anns:
+                if ann.track_id is not None:
+                    if ann.track_id in seen_track_ids:
+                        # 重複を検出
+                        duplicates_in_frame += 1
+                        continue
+                    seen_track_ids.add(ann.track_id)
+
+                cleaned_anns.append(ann)
+
+            # 重複があった場合はリストを更新
+            if duplicates_in_frame > 0:
+                self.annotations[frame] = cleaned_anns
+                total_duplicates_removed += duplicates_in_frame
+
+            self._total_count += len(cleaned_anns)
+            for ann in cleaned_anns:
                 if ann.track_id is not None:
                     self._track_ids.add(ann.track_id)
                     self._track_count[ann.track_id] = self._track_count.get(ann.track_id, 0) + 1
@@ -180,12 +203,34 @@ class AnnotationStore:
         if self.progress_callback and total > 100:
             self.progress_callback(total, total)
 
+        # 重複除去があった場合は警告
+        if total_duplicates_removed > 0:
+            logging.warning(f"重複アノテーションを {total_duplicates_removed} 件除去しました")
+
     def add(self, annotation: Annotation, save_undo: bool = True) -> None:
-        """アノテーションを追加"""
+        """
+        アノテーションを追加
+
+        同一(frame, track_id)のアノテーションが既に存在する場合は、
+        既存のアノテーションを更新（bbox, is_manual, confidenceを上書き）
+        """
         if save_undo:
             self._save_undo_state()
 
         frame = annotation.frame
+
+        # track_id が None でない場合、重複チェック
+        if annotation.track_id is not None:
+            existing = self._frame_track_index.get((frame, annotation.track_id))
+            if existing is not None:
+                # 既存のアノテーションを更新（リストへの追加はしない）
+                existing.bbox = annotation.bbox
+                existing.is_manual = annotation.is_manual
+                existing.confidence = annotation.confidence
+                # キャッシュ更新は不要（オブジェクト自体は変わらない）
+                return
+
+        # 新規追加
         if frame not in self.annotations:
             self.annotations[frame] = []
         self.annotations[frame].append(annotation)
@@ -381,13 +426,16 @@ class AnnotationStore:
         """
         source_track_idのすべてのアノテーションをtarget_track_idに統合
 
+        同一フレームにtarget_track_idのアノテーションが既に存在する場合、
+        sourceのアノテーションは削除される（衝突処理）
+
         Args:
             source_track_id: 統合元のトラックID
             target_track_id: 統合先のトラックID
             save_undo: Undoスタックに保存するか
 
         Returns:
-            変更されたアノテーション数
+            統合先に移動されたアノテーション数（衝突削除分は含まない）
         """
         if source_track_id == target_track_id:
             return 0
@@ -400,11 +448,33 @@ class AnnotationStore:
             return 0
 
         source_anns = list(self._track_annotations[source_track_id].values())
-        count = len(source_anns)
 
-        # 進捗通知の準備
-        total = count
-        for i, ann in enumerate(source_anns):
+        # 衝突チェック: target_track_idが既に存在するフレームを特定
+        conflicting_anns = []
+        non_conflicting_anns = []
+
+        for ann in source_anns:
+            if (ann.frame, target_track_id) in self._frame_track_index:
+                conflicting_anns.append(ann)
+            else:
+                non_conflicting_anns.append(ann)
+
+        # 衝突するアノテーションを削除
+        for ann in conflicting_anns:
+            frame = ann.frame
+            if frame in self.annotations:
+                try:
+                    self.annotations[frame].remove(ann)
+                    self._total_count -= 1
+                    # 空になったフレームを削除
+                    if not self.annotations[frame]:
+                        del self.annotations[frame]
+                except ValueError:
+                    pass
+
+        # 衝突しないアノテーションのtrack_idを変更
+        total = len(non_conflicting_anns)
+        for i, ann in enumerate(non_conflicting_anns):
             # 進捗通知（100個ごと）
             if self.progress_callback and total > 100 and i % 100 == 0:
                 self.progress_callback(i, total)
@@ -421,20 +491,29 @@ class AnnotationStore:
         if self.progress_callback and total > 100:
             self.progress_callback(total, total)
 
-        # キャッシュ更新（参照カウント移動）
-        source_count = self._track_count.pop(source_track_id, 0)
+        # キャッシュ更新
         self._track_ids.discard(source_track_id)
         self._track_ids.add(target_track_id)
-        self._track_count[target_track_id] = self._track_count.get(target_track_id, 0) + source_count
 
-        # トラックアノテーションインデックスを移動
+        # sourceトラックのカウントを削除
+        self._track_count.pop(source_track_id, 0)
+
+        # targetトラックのカウントを更新（衝突削除分を除く）
+        self._track_count[target_track_id] = self._track_count.get(target_track_id, 0) + len(non_conflicting_anns)
+
+        # トラックアノテーションインデックスを更新
         if target_track_id not in self._track_annotations:
             self._track_annotations[target_track_id] = {}
-        for ann_id, ann in self._track_annotations[source_track_id].items():
+
+        # 衝突しないアノテーションのみを移動
+        for ann in non_conflicting_anns:
+            ann_id = id(ann)
             self._track_annotations[target_track_id][ann_id] = ann
+
+        # sourceトラックのインデックスをクリーンアップ
         self._track_annotations.pop(source_track_id, None)
 
-        return count
+        return len(non_conflicting_anns)
 
     def split_track(
         self,

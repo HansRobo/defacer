@@ -1242,10 +1242,7 @@ class VideoPlayerWidget(QLabel):
             if reply != QMessageBox.Yes:
                 return
 
-            # 重複フレームの統合元アノテーションを削除
-            self._remove_track_from_frames(source_track_id, conflicts)
-
-        # トラック統合を実行
+        # トラック統合を実行（merge_tracks内部で衝突処理も実施）
         count = self._annotation_store.merge_tracks(source_track_id, target_track_id)
 
         self.annotations_changed.emit(True)  # 構造変更
@@ -1272,16 +1269,6 @@ class VideoPlayerWidget(QLabel):
 
         conflicts = sorted(source_frames & target_frames)
         return conflicts
-
-    def _remove_track_from_frames(
-        self, track_id: int, frames: list[int]
-    ) -> None:
-        """指定トラックIDの指定フレームのアノテーションを削除"""
-        for frame in frames:
-            anns = self._annotation_store.get_frame_annotations(frame)
-            to_remove = [ann for ann in anns if ann.track_id == track_id]
-            for ann in to_remove:
-                self._annotation_store.remove_annotation(ann, save_undo=False)
 
     def _delete_annotation_at_point(self, annotation: Annotation) -> None:
         """指定のアノテーションを削除"""

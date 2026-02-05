@@ -365,6 +365,10 @@ class RetrackDialog(QDialog):
                         ann.track_id = new_track_id
                         updated_count += 1
 
+            # track_idを直接変更したのでキャッシュを再構築
+            if updated_count > 0:
+                self.annotations._rebuild_cache()
+
             self._status_label.setText(f"完了: {updated_count}件のtrack_idを更新")
             if updated_count > 0:
                 self.retrack_completed.emit()

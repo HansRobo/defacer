@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "defacer"
-version = "0.4.4"
+version = "0.4.5"
 description = "動画内の顔を自動検知してモザイク処理を行うソフトウェア"
 readme = "README.md"
 license = {text = "MIT"}
