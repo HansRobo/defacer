@@ -150,17 +150,20 @@ class DetectionDialog(QDialog):
 
     detections_ready = pyqtSignal(object)  # AnnotationStore
 
+
     def __init__(
         self,
         parent,
         video_path: Path,
         frame_count: int,
         current_frame: int,
+        initial_range: tuple[int, int] | None = None,
     ):
         super().__init__(parent)
         self.video_path = video_path
         self.frame_count = frame_count
         self.current_frame = current_frame
+        self.initial_range = initial_range
         self._worker: DetectionWorker | None = None
         self._temp_store = AnnotationStore()
         self._next_track_id = 1
@@ -228,9 +231,13 @@ class DetectionDialog(QDialog):
 
         # 範囲選択
         self._range_all = QRadioButton("全フレーム")
-        self._range_all.setChecked(True)
         self._range_current = QRadioButton("現在のフレームのみ")
         self._range_custom = QRadioButton("範囲を指定")
+
+        if self.initial_range:
+            self._range_custom.setChecked(True)
+        else:
+            self._range_all.setChecked(True)
 
         range_layout.addWidget(self._range_all)
         range_layout.addWidget(self._range_current)
@@ -241,13 +248,23 @@ class DetectionDialog(QDialog):
         custom_layout.addWidget(QLabel("開始:"))
         self._start_frame = QSpinBox()
         self._start_frame.setRange(0, self.frame_count - 1)
-        self._start_frame.setValue(0)
+        
+        start_val = 0
+        if self.initial_range:
+            start_val = self.initial_range[0]
+        self._start_frame.setValue(start_val)
+        
         custom_layout.addWidget(self._start_frame)
 
         custom_layout.addWidget(QLabel("終了:"))
         self._end_frame = QSpinBox()
         self._end_frame.setRange(0, self.frame_count - 1)
-        self._end_frame.setValue(self.frame_count - 1)
+        
+        end_val = self.frame_count - 1
+        if self.initial_range:
+            end_val = self.initial_range[1]
+        self._end_frame.setValue(end_val)
+        
         custom_layout.addWidget(self._end_frame)
 
         custom_layout.addStretch()

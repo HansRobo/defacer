@@ -62,7 +62,8 @@ from PyQt5.QtCore import QThread, pyqtSignal, QEventLoop
 
 from defacer.gui.video_player import VideoPlayerWidget
 from defacer.gui.timeline import TimelineWidget
-from defacer.gui.annotation import AnnotationStore
+from defacer.gui.annotation import Annotation, AnnotationStore
+
 from defacer.gui.export_dialog import ExportDialog
 from defacer.gui.detection_dialog import DetectionDialog
 from defacer.gui.retrack_dialog import RetrackDialog
@@ -190,6 +191,9 @@ class MainWindow(QMainWindow):
         self._timeline.play_clicked.connect(self._video_player.play)
         self._timeline.pause_clicked.connect(self._video_player.pause)
         self._timeline.stop_clicked.connect(self._video_player.stop)
+        self._timeline.delete_range_triggered.connect(self._on_delete_range)
+        self._timeline.detect_range_triggered.connect(self._on_detect_range)
+        self._timeline.visible_range_changed.connect(self._on_timeline_view_changed)
 
         # ステータスバー
         self._status_bar = QStatusBar()
@@ -572,6 +576,90 @@ class MainWindow(QMainWindow):
         self._delete_btn.setEnabled(has_selection)
         self._copy_next_btn.setEnabled(has_selection)
         self._interpolate_btn.setEnabled(has_selection)
+        
+        # タイムラインのトラック表示更新
+        self._update_timeline_track_viz(annotation)
+
+    def _on_timeline_view_changed(self) -> None:
+        """タイムラインの表示範囲（ズーム・スクロール）が変更された時"""
+        # 選択中のアノテーションがあればサムネイルを更新
+        if self._video_player.selected_annotation:
+            self._update_timeline_track_viz(self._video_player.selected_annotation)
+
+    def _update_timeline_track_viz(self, annotation) -> None:
+        """タイムライン上のトラック可視化を更新"""
+        if annotation is None or annotation.track_id is None:
+            self._timeline.set_selected_track([], [])
+            return
+
+        store = self._video_player.annotation_store
+        frames = store.get_track_frames(annotation.track_id)
+        
+        if not frames:
+            self._timeline.set_selected_track([], [])
+            return
+            
+        # 表示範囲を取得
+        start_view, end_view = self._timeline.get_visible_range()
+        
+        # タイムラインの幅からサムネイルの推奨数を計算（動的密度）
+        timeline_width = self._timeline.width()
+        if timeline_width <= 0:
+            timeline_width = 800
+            
+        # 150pxに1つくらいの密度
+        max_thumbnails = max(2, timeline_width // 150)
+        # 上限を設定（パフォーマンス考慮）
+        max_thumbnails = min(50, max_thumbnails)
+        
+        # 表示範囲内のフレームを抽出
+        visible_frames = [f for f in frames if start_view <= f <= end_view]
+        
+        target_frames = []
+        if not visible_frames:
+             # 表示範囲内にない場合はサムネイルなし
+             pass
+        elif len(visible_frames) <= max_thumbnails:
+             target_frames = visible_frames
+        else:
+             # 均等に間引く
+             step = max(1.0, (len(visible_frames) - 1) / (max_thumbnails - 1))
+             target_frames = [visible_frames[int(i * step)] for i in range(max_thumbnails)]
+             
+             # 最後のフレームが含まれないことがあるので調整（必須ではないが）
+        
+        # プレーヤーの状態を保存
+        current_frame = self._video_player._current_frame_number
+        
+        thumbnails = []
+        from PyQt5.QtCore import QRect
+
+        for frame_num in target_frames:
+            
+            # アノテーション情報を取得（座標用）
+            ann_list = store.get_frame_annotations(frame_num)
+            target_ann = next((a for a in ann_list if a.track_id == annotation.track_id), None)
+            
+            img = self._video_player.get_thumbnail(frame_num)
+            if img:
+                # 30pxの高さにリサイズ（描画最適化）
+                scaled_h = 30
+                
+                if target_ann:
+                    # バウンディングボックスに合わせて切り抜き
+                    bbox = target_ann.bbox
+                    rect = QRect(bbox.x1, bbox.y1, bbox.width, bbox.height)
+                    cropped_img = img.copy(rect)
+                    final_img = cropped_img.scaledToHeight(scaled_h, Qt.SmoothTransformation)
+                else:
+                    final_img = img.scaledToHeight(scaled_h, Qt.SmoothTransformation)
+                    
+                thumbnails.append((frame_num, final_img))
+                
+        # 元のフレームに戻す（表示用バッファを復元）
+        self._video_player._show_frame(current_frame)
+        
+        self._timeline.set_selected_track(frames, thumbnails)
 
     def _update_window_title(self) -> None:
         """ウィンドウタイトルを更新"""
@@ -607,6 +695,30 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(f"{count}フレームを補間しました")
         else:
             self._status_bar.showMessage("補間するフレームがありません")
+
+    def _on_delete_range(self, start: int, end: int) -> None:
+        """指定範囲のアノテーションを削除"""
+        count = self._video_player.annotation_store.remove_range(start, end)
+        if count > 0:
+            self._on_annotations_changed()
+            self._status_bar.showMessage(f"{count}個のアノテーションを削除しました（範囲: {start}-{end}）")
+        else:
+            self._status_bar.showMessage(f"削除対象のアノテーションがありませんでした（範囲: {start}-{end}）")
+
+    def _on_detect_range(self, start: int, end: int) -> None:
+        """指定範囲で顔検出を実行"""
+        if self._current_video_path is None:
+            return
+
+        dialog = DetectionDialog(
+            self,
+            self._current_video_path,
+            self._video_player.frame_count,
+            self._video_player.current_frame_number,
+            initial_range=(start, end),
+        )
+        dialog.detections_ready.connect(self._on_detections_ready)
+        dialog.exec_()
 
     def _toggle_auto_interpolate(self) -> None:
         """自動補間モードを切り替え"""

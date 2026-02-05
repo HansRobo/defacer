@@ -419,15 +419,34 @@ class VideoPlayerWidget(QLabel):
             return False
 
         self._current_frame = frame
+        
+        # フレームが変わった場合のみ選択を解除
+        if self._current_frame_number != frame_number:
+            self._selected_annotation = None
+            self._selected_index = -1
+            
         self._current_frame_number = frame_number
-
-        # 選択を解除（フレームが変わったら）
-        self._selected_annotation = None
-        self._selected_index = -1
 
         self._update_display()
         self.frame_changed.emit(frame_number)
         return True
+
+    def get_thumbnail(self, frame_number: int) -> QImage | None:
+        """指定フレームのサムネイル画像を取得"""
+        if self._reader is None:
+            return None
+        
+        frame = self._reader.read_frame(frame_number)
+        if frame is None:
+            return None
+            
+        # BGRからRGBに変換
+        frame_rgb = frame[:, :, ::-1].copy()
+        h, w, ch = frame_rgb.shape
+        bytes_per_line = ch * w
+        q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        
+        return q_img.copy()  # コピーして返す（参照切れ防止）
 
     def _update_display(self) -> None:
         """表示を更新"""

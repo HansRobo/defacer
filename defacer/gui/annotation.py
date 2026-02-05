@@ -417,6 +417,17 @@ class AnnotationStore:
 
         return count
 
+    def get_track_frames(self, track_id: int) -> list[int]:
+        """指定トラックIDのアノテーションが存在するフレーム番号のリストを取得"""
+        if track_id not in self._track_annotations:
+            return []
+        
+        frames = set()
+        for ann in self._track_annotations[track_id].values():
+            frames.add(ann.frame)
+        
+        return sorted(list(frames))
+
     def merge_tracks(
         self,
         source_track_id: int,
@@ -636,6 +647,59 @@ class AnnotationStore:
                 self.add(new_ann, save_undo=False)
                 count += 1
 
+        return count
+
+    def remove_range(
+        self,
+        start_frame: int,
+        end_frame: int,
+        save_undo: bool = True,
+    ) -> int:
+        """
+        指定範囲のフレームにあるアノテーションをすべて削除
+        
+        Args:
+            start_frame: 開始フレーム（これを含む）
+            end_frame: 終了フレーム（これを含む）
+            save_undo: Undoスタックに保存するか
+
+        Returns:
+            削除されたアノテーション数
+        """
+        if save_undo:
+            self._save_undo_state()
+            
+        count = 0
+        frames_to_remove = []
+        
+        # 削除対象のフレームを特定
+        for frame in list(self.annotations.keys()):
+            if start_frame <= frame <= end_frame:
+                frames_to_remove.append(frame)
+                
+        # 削除実行
+        for frame in frames_to_remove:
+            anns = self.annotations[frame]
+            count += len(anns)
+            
+            # キャッシュ更新のための前処理
+            for ann in anns:
+                if ann.track_id is not None:
+                    # トラック情報の更新
+                    self._track_count[ann.track_id] -= 1
+                    if self._track_count[ann.track_id] <= 0:
+                        self._track_ids.discard(ann.track_id)
+                        self._track_count.pop(ann.track_id, None)
+                        self._track_annotations.pop(ann.track_id, None)
+                    else:
+                        if ann.track_id in self._track_annotations:
+                            self._track_annotations[ann.track_id].pop(id(ann), None)
+                    
+                    self._frame_track_index.pop((frame, ann.track_id), None)
+            
+            del self.annotations[frame]
+            
+        self._total_count -= count
         return count
 
     def clear(self, save_undo: bool = True) -> None:
