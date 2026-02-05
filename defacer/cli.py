@@ -81,6 +81,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="バウンディングボックスの拡大率（デフォルト: 1.1）",
     )
     auto_parser.add_argument(
+        "--tracker",
+        choices=["botsort", "bytetrack"],
+        default="botsort",
+        help="使用するトラッカー（デフォルト: botsort）",
+    )
+    auto_parser.add_argument(
         "--no-tracking",
         action="store_true",
         help="トラッキングを無効化",
@@ -127,7 +133,10 @@ def run_auto(args: argparse.Namespace) -> int:
     print(f"検知器: {args.detector}")
     print(f"閾値: {args.threshold}")
     print(f"モザイク: {args.mosaic_type}")
-    print(f"トラッキング: {'無効' if args.no_tracking else '有効'}")
+    if args.no_tracking:
+        print(f"トラッキング: 無効")
+    else:
+        print(f"トラッキング: 有効 ({args.tracker})")
     print()
 
     # 依存関係のチェック
@@ -177,12 +186,25 @@ def run_auto(args: argparse.Namespace) -> int:
     tracker = None
     if not args.no_tracking:
         try:
-            from defacer.tracking import create_tracker
-            tracker = create_tracker(max_age=30, min_hits=3)
-            print("DeepSORTトラッキングを使用")
+            from defacer.tracking import create_tracker, get_available_trackers
+            available_trackers = get_available_trackers()
+            if not available_trackers:
+                print(f"エラー: トラッキングが利用できません", file=sys.stderr)
+                print("pip install ultralytics でインストールしてください", file=sys.stderr)
+                return 1
+            tracker = create_tracker(
+                tracker_type=args.tracker,
+                confidence_threshold=args.threshold,
+                max_age=30,
+                min_hits=3
+            )
+            print(f"Ultralyticsトラッキング({args.tracker})を使用")
         except ImportError as e:
             print(f"エラー: トラッキングが利用できません: {e}", file=sys.stderr)
-            print("pip install deep-sort-realtime でインストールしてください", file=sys.stderr)
+            print("pip install ultralytics でインストールしてください", file=sys.stderr)
+            return 1
+        except ValueError as e:
+            print(f"エラー: {e}", file=sys.stderr)
             return 1
 
     # 動画を読み込み
@@ -204,10 +226,9 @@ def run_auto(args: argparse.Namespace) -> int:
 
     with tqdm(total=reader.frame_count, desc="検出") as pbar:
         for frame_num, frame in reader:
-            detections = detector.detect(frame)
-
-            if tracker:
-                tracked = tracker.update(detections, frame)
+            if tracker and tracker.supports_integrated_tracking():
+                # 統合トラッキング: detect + track を一度に
+                tracked = tracker.track(frame)
                 for t in tracked:
                     x1, y1, x2, y2 = t.bbox
                     # バウンディングボックスを拡大
@@ -230,28 +251,57 @@ def run_auto(args: argparse.Namespace) -> int:
                     )
                     store.add(ann, save_undo=False)
             else:
-                for det in detections:
-                    x1, y1, x2, y2 = det.bbox
-                    # バウンディングボックスを拡大
-                    if args.bbox_scale != 1.0:
-                        cx = (x1 + x2) // 2
-                        cy = (y1 + y2) // 2
-                        w = int((x2 - x1) * args.bbox_scale)
-                        h = int((y2 - y1) * args.bbox_scale)
-                        x1 = max(0, cx - w // 2)
-                        y1 = max(0, cy - h // 2)
-                        x2 = min(reader.width, cx + w // 2)
-                        y2 = min(reader.height, cy + h // 2)
+                # トラッキングなし、または旧API
+                detections = detector.detect(frame)
 
-                    ann = Annotation(
-                        frame=frame_num,
-                        bbox=BoundingBox(x1, y1, x2, y2),
-                        track_id=next_track_id,
-                        is_manual=False,
-                        confidence=det.confidence,
-                    )
-                    store.add(ann, save_undo=False)
-                    next_track_id += 1
+                if tracker:
+                    # 旧APIトラッカー（DeepSORTなど）
+                    tracked = tracker.update(detections, frame)
+                    for t in tracked:
+                        x1, y1, x2, y2 = t.bbox
+                        # バウンディングボックスを拡大
+                        if args.bbox_scale != 1.0:
+                            cx = (x1 + x2) // 2
+                            cy = (y1 + y2) // 2
+                            w = int((x2 - x1) * args.bbox_scale)
+                            h = int((y2 - y1) * args.bbox_scale)
+                            x1 = max(0, cx - w // 2)
+                            y1 = max(0, cy - h // 2)
+                            x2 = min(reader.width, cx + w // 2)
+                            y2 = min(reader.height, cy + h // 2)
+
+                        ann = Annotation(
+                            frame=frame_num,
+                            bbox=BoundingBox(x1, y1, x2, y2),
+                            track_id=t.track_id,
+                            is_manual=False,
+                            confidence=t.confidence,
+                        )
+                        store.add(ann, save_undo=False)
+                else:
+                    # トラッキングなし
+                    for det in detections:
+                        x1, y1, x2, y2 = det.bbox
+                        # バウンディングボックスを拡大
+                        if args.bbox_scale != 1.0:
+                            cx = (x1 + x2) // 2
+                            cy = (y1 + y2) // 2
+                            w = int((x2 - x1) * args.bbox_scale)
+                            h = int((y2 - y1) * args.bbox_scale)
+                            x1 = max(0, cx - w // 2)
+                            y1 = max(0, cy - h // 2)
+                            x2 = min(reader.width, cx + w // 2)
+                            y2 = min(reader.height, cy + h // 2)
+
+                        ann = Annotation(
+                            frame=frame_num,
+                            bbox=BoundingBox(x1, y1, x2, y2),
+                            track_id=next_track_id,
+                            is_manual=False,
+                            confidence=det.confidence,
+                        )
+                        store.add(ann, save_undo=False)
+                        next_track_id += 1
 
             pbar.update(1)
 

@@ -645,6 +645,10 @@ class VideoPlayerWidget(QLabel):
             find_merge_action = menu.addAction(f"トラック {ann.track_id} の統合候補を探す...")
             find_merge_action.triggered.connect(lambda: self._start_merge_search_for_annotation(ann))
 
+            # 自動統合（新規追加）
+            auto_merge_action = menu.addAction("トラックを自動統合...")
+            auto_merge_action.triggered.connect(self._start_auto_merge_search)
+
             # 手動で統合先を選択
             merge_action = menu.addAction(f"トラック {ann.track_id} を別のトラックに統合...")
             merge_action.triggered.connect(lambda: self._show_merge_dialog(ann))
@@ -1229,6 +1233,39 @@ class VideoPlayerWidget(QLabel):
             target_track_id = available_tracks[items.index(item)]
             self._merge_tracks(source_track_id, target_track_id)
 
+    def _start_auto_merge_search(self) -> None:
+        """全トラックの自動統合候補を検索"""
+        from defacer.tracking.merge_suggestion import compute_merge_suggestions
+
+        # ステータス表示
+        self.status_message.emit("トラック統合候補を検索中...", 0)
+
+        # 全候補を検出（フィルタリングなし）
+        all_suggestions = compute_merge_suggestions(
+            self._annotation_store,
+            max_time_gap=self._merge_state.max_time_gap,
+            max_position_distance=self._merge_state.max_position_distance,
+            min_confidence=self._merge_state.min_confidence,
+        )
+
+        # 全候補を設定（特定トラックでフィルタしない）
+        self._merge_state.source_track_id = None  # 全体検索を示す
+        self._merge_state.candidates = all_suggestions
+        self._merge_state.selected_idx = 0
+
+        # 統合候補UIを表示
+        self._show_merge_candidate_ui()
+
+        if not all_suggestions:
+            self._show_no_candidates_toast()
+            # 候補がない場合、パラメータパネルを自動的に表示
+            if not self._params_panel.isVisible():
+                self._toggle_params_panel()
+        else:
+            self.status_message.emit(f"{len(all_suggestions)}件の統合候補を検出しました", 3000)
+
+        self._update_display()
+
     def _split_track_at_current_frame(self, annotation: Annotation) -> None:
         """現在のフレーム位置でトラックを分割"""
         track_id = annotation.track_id
@@ -1479,10 +1516,7 @@ class VideoPlayerWidget(QLabel):
 
     def _re_search_candidates(self) -> None:
         """パラメータを変更して再検索"""
-        if self._merge_state.source_track_id is None:
-            return
-
-        # 現在の選択を保存
+        # 現在の選択を保存（Noneの場合は全体検索モード）
         old_track_id = self._merge_state.source_track_id
 
         # パラメータを更新
@@ -1501,8 +1535,12 @@ class VideoPlayerWidget(QLabel):
             min_confidence=confidence,
         )
 
-        # 選択中トラックを含む候補のみフィルタ
-        filtered = [s for s in all_suggestions if old_track_id in s.track_ids]
+        # 全体検索モード（source_track_id == None）の場合はフィルタしない
+        if old_track_id is None:
+            filtered = all_suggestions
+        else:
+            # 選択中トラックを含む候補のみフィルタ
+            filtered = [s for s in all_suggestions if old_track_id in s.track_ids]
 
         self._merge_state.candidates = filtered
         self._merge_state.selected_idx = 0

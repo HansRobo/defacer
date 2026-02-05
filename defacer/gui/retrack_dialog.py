@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QMessageBox,
     QRadioButton,
+    QComboBox,
 )
 
 from defacer.video.reader import VideoReader
@@ -33,6 +34,7 @@ class RetrackWorker(QThread):
         annotations: AnnotationStore,
         start_frame: int,
         end_frame: int,
+        tracker_type: str = "botsort",
         max_age: int = 30,
         min_hits: int = 3,
     ):
@@ -41,6 +43,7 @@ class RetrackWorker(QThread):
         self.annotations = annotations
         self.start_frame = start_frame
         self.end_frame = end_frame
+        self.tracker_type = tracker_type
         self.max_age = max_age
         self.min_hits = min_hits
         self._cancelled = False
@@ -107,20 +110,13 @@ class RetrackWorker(QThread):
         try:
             # トラッカー初期化
             from defacer.tracking import create_tracker
-            tracker = create_tracker(max_age=self.max_age, min_hits=self.min_hits)
+            tracker = create_tracker(
+                tracker_type=self.tracker_type,
+                max_age=self.max_age,
+                min_hits=self.min_hits
+            )
         except ModuleNotFoundError as e:
-            if "torch" in str(e):
-                self.finished.emit(
-                    False,
-                    "PyTorchがインストールされていません。\n\n"
-                    "以下のコマンドでインストールしてください:\n"
-                    "pip install torch torchvision\n\n"
-                    "または、ROCm環境の場合:\n"
-                    "pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2",
-                    {}
-                )
-            else:
-                self.finished.emit(False, f"トラッカーの初期化に失敗: {e}", {})
+            self.finished.emit(False, f"トラッカーの初期化に失敗: {e}", {})
             return
         except Exception as e:
             self.finished.emit(False, f"トラッカーの初期化に失敗: {e}", {})
@@ -166,7 +162,7 @@ class RetrackWorker(QThread):
                     for a in anns
                 ]
 
-                # DeepSORTでトラッキング
+                # トラッキング実行
                 tracked = tracker.update(detections, frame)
 
                 # track_idマッピングを構築
@@ -257,6 +253,25 @@ class RetrackDialog(QDialog):
         tracking_group = QGroupBox("トラッキング設定")
         tracking_layout = QVBoxLayout(tracking_group)
 
+        # トラッカー選択
+        tracker_layout = QHBoxLayout()
+        tracker_layout.addWidget(QLabel("トラッカー:"))
+        self._tracker_type = QComboBox()
+
+        from defacer.tracking import get_available_trackers
+        available_trackers = get_available_trackers()
+        if available_trackers:
+            self._tracker_type.addItems(available_trackers)
+            if "botsort" in available_trackers:
+                self._tracker_type.setCurrentText("botsort")
+        else:
+            self._tracker_type.addItem("(利用可能なトラッカーがありません)")
+            self._tracker_type.setEnabled(False)
+
+        tracker_layout.addWidget(self._tracker_type)
+        tracker_layout.addStretch()
+        tracking_layout.addLayout(tracker_layout)
+
         # max_age設定
         max_age_layout = QHBoxLayout()
         max_age_layout.addWidget(QLabel("最大追跡フレーム数:"))
@@ -339,6 +354,7 @@ class RetrackDialog(QDialog):
             self.annotations,
             start_frame,
             end_frame,
+            tracker_type=self._tracker_type.currentText(),
             max_age=self._tracking_max_age.value(),
             min_hits=self._tracking_min_hits.value(),
         )
