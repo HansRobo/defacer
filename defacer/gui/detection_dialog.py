@@ -26,7 +26,11 @@ from defacer.gui.annotation import AnnotationStore, Annotation, BoundingBox
 
 
 class DetectionWorker(QThread):
-    """検出処理を行うワーカースレッド"""
+    """検出処理を行うワーカースレッド
+
+    ROI (Region of Interest) に対応しており、roi パラメータを指定すると
+    その領域内のみで検出を行い、結果を元のフレーム座標系に変換します。
+    """
 
     progress = pyqtSignal(int, int)  # (current, total)
     detection_found = pyqtSignal(int, list)  # (frame_number, detections)
@@ -41,6 +45,7 @@ class DetectionWorker(QThread):
         end_frame: int,
         frame_skip: int,
         bbox_scale: float,
+        roi: BoundingBox | None = None,
     ):
         super().__init__()
         self.video_path = video_path
@@ -50,6 +55,7 @@ class DetectionWorker(QThread):
         self.end_frame = end_frame
         self.frame_skip = frame_skip
         self.bbox_scale = bbox_scale
+        self.roi = roi
         self._cancelled = False
 
     def cancel(self):
@@ -86,8 +92,44 @@ class DetectionWorker(QThread):
                 if frame is None:
                     continue
 
+                # ROI領域のクロップ処理
+                if self.roi is not None:
+                    roi_x1 = max(0, int(self.roi.x1))
+                    roi_y1 = max(0, int(self.roi.y1))
+                    roi_x2 = min(frame.shape[1], int(self.roi.x2))
+                    roi_y2 = min(frame.shape[0], int(self.roi.y2))
+
+                    if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
+                        continue
+
+                    cropped_frame = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+                    detection_frame = cropped_frame
+                else:
+                    detection_frame = frame
+                    roi_x1 = roi_y1 = 0
+
                 # 純粋な検出のみ（トラッキングなし）
-                detections = detector.detect(frame)
+                detections = detector.detect(detection_frame)
+
+                # ROI使用時は座標を補正
+                if self.roi is not None and detections:
+                    from defacer.detection.base import Detection
+                    adjusted_detections = []
+                    for det in detections:
+                        adjusted_bbox = (
+                            det.x1 + roi_x1,
+                            det.y1 + roi_y1,
+                            det.x2 + roi_x1,
+                            det.y2 + roi_y1,
+                        )
+                        adjusted_det = Detection(
+                            bbox=adjusted_bbox,
+                            confidence=det.confidence,
+                            landmarks=det.landmarks,
+                        )
+                        adjusted_detections.append(adjusted_det)
+                    detections = adjusted_detections
+
                 if detections:
                     self.detection_found.emit(frame_num, detections)
                     detection_count += len(detections)

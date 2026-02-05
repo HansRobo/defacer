@@ -1,6 +1,7 @@
 """動画プレーヤーウィジェット"""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import (
     QImage,
@@ -338,6 +339,10 @@ class VideoPlayerWidget(QLabel):
         self._params_panel.params_changed.connect(self._on_params_changed)
         self._params_panel.search_clicked.connect(self._re_search_candidates)
 
+        # 領域検出ワーカー
+        self._region_worker = None
+        self._region_source_annotation: Annotation | None = None
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -364,6 +369,29 @@ class VideoPlayerWidget(QLabel):
     @property
     def auto_interpolate(self) -> bool:
         return self._auto_interpolate
+
+    def cleanup(self) -> None:
+        """リソースをクリーンアップ"""
+        # 領域検出ワーカーを停止
+        if self._region_worker is not None and self._region_worker.isRunning():
+            self._region_worker.cancel()
+            self._region_worker.wait(1000)  # 最大1秒待つ
+            if self._region_worker.isRunning():
+                self._region_worker.terminate()
+            self._region_worker = None
+
+        # 動画再生を停止
+        self.stop()
+
+        # VideoReaderをリリース
+        if self._reader is not None:
+            self._reader.release()
+            self._reader = None
+
+    def closeEvent(self, event) -> None:
+        """ウィンドウが閉じられる前にクリーンアップ"""
+        self.cleanup()
+        super().closeEvent(event)
 
     def load_video(self, path: str) -> bool:
         """動画を読み込む"""
@@ -604,6 +632,12 @@ class VideoPlayerWidget(QLabel):
 
         # メニュー構築
         menu = QMenu(self)
+
+        # 領域内顔検出
+        detect_action = menu.addAction("この領域内で顔を検出")
+        detect_action.triggered.connect(lambda: self._detect_faces_in_region(ann))
+
+        menu.addSeparator()
 
         # トラックIDがある場合のみ統合メニューを表示
         if ann.track_id is not None:
@@ -1309,6 +1343,92 @@ class VideoPlayerWidget(QLabel):
                 f"トラック #{track_id} の全アノテーション（{count}個）を削除しました",
                 5000
             )
+
+    def _detect_faces_in_region(self, annotation: Annotation) -> None:
+        """アノテーション領域内で顔検出を実行"""
+        if self._region_worker is not None:
+            if self._region_worker.isRunning():
+                self.status_message.emit("検出処理が実行中です", 3000)
+                return
+            else:
+                # 前回のワーカーをクリーンアップ
+                self._region_worker.deleteLater()
+                self._region_worker = None
+
+        from defacer.gui.detection_dialog import DetectionWorker
+
+        # 元のアノテーションを保存（成功時に削除するため）
+        self._region_source_annotation = annotation
+
+        self._region_worker = DetectionWorker(
+            video_path=Path(self.video_path),
+            detector_type="yolo11-face",
+            confidence_threshold=0.5,
+            start_frame=self._current_frame_number,
+            end_frame=self._current_frame_number,
+            frame_skip=0,
+            bbox_scale=1.1,
+            roi=annotation.bbox,
+        )
+        self._region_worker.detection_found.connect(self._on_region_detection_found)
+        self._region_worker.finished.connect(self._on_region_detection_finished)
+        self._region_worker.start()
+
+        self.status_message.emit("領域内で顔を検出中...", 0)
+
+    def _on_region_detection_found(self, frame_number: int, detections: list) -> None:
+        """領域検出結果を受け取りアノテーションを追加"""
+        self._annotation_store._save_undo_state()
+
+        # 元のアノテーションを削除（検出範囲として使用したもの）
+        if self._region_source_annotation is not None:
+            self._annotation_store.remove_annotation(self._region_source_annotation, save_undo=False)
+
+        bbox_scale = 1.1
+
+        for det in detections:
+            # バウンディングボックスを拡大（DetectionDialogと同じロジック）
+            x1, y1, x2, y2 = det.bbox
+            if bbox_scale != 1.0:
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                new_w = int((x2 - x1) * bbox_scale)
+                new_h = int((y2 - y1) * bbox_scale)
+                x1 = max(0, cx - new_w // 2)
+                y1 = max(0, cy - new_h // 2)
+                x2 = cx + new_w // 2
+                y2 = cy + new_h // 2
+
+            ann = Annotation(
+                frame=frame_number,
+                bbox=BoundingBox(x1, y1, x2, y2),
+                track_id=self._annotation_store.new_track_id(),
+                is_manual=False,
+                confidence=det.confidence,
+            )
+            self._annotation_store.add(ann, save_undo=False)
+
+        self.annotations_changed.emit(True)
+
+    def _on_region_detection_finished(self, success: bool, message: str, count: int) -> None:
+        """領域検出完了"""
+        if success:
+            if count > 0:
+                self.status_message.emit(f"{count}個の顔を検出しました", 5000)
+            else:
+                self.status_message.emit("顔は検出されませんでした", 5000)
+        else:
+            self.status_message.emit(message, 5000)
+
+        # 元のアノテーション参照をクリア
+        self._region_source_annotation = None
+
+        # ワーカーをクリーンアップ
+        if self._region_worker is not None:
+            self._region_worker.deleteLater()
+            self._region_worker = None
+
+        self._update_display()
 
     def _start_merge_search_for_annotation(self, annotation: Annotation) -> None:
         """指定アノテーションの統合候補探索を開始"""
