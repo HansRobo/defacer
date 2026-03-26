@@ -484,14 +484,6 @@ class MainWindow(QMainWindow):
 
     def _open_video(self, path: Path) -> None:
         """動画を開く"""
-        if not path.exists():
-            QMessageBox.critical(
-                self,
-                "エラー",
-                f"ファイルが見つかりません:\n{path}",
-            )
-            return
-
         if self._video_player.load_video(str(path)):
             self._current_video_path = path
             self._annotation_file_path = None
@@ -505,6 +497,7 @@ class MainWindow(QMainWindow):
             )
             self._update_video_info()
             self._update_annotation_info()
+            self._timeline.set_annotations(self._video_player.annotation_store.annotations)
 
             # 同名のアノテーションファイルがあれば読み込み
             annotation_path = path.with_suffix(".defacer.json")
@@ -548,11 +541,7 @@ class MainWindow(QMainWindow):
         total = len(store)
         current_frame = self._video_player.current_frame_number
         current = len(store.get_frame_annotations(current_frame))
-
         self._annotation_count.setText(f"領域数: {total} (現フレーム: {current})")
-
-        # タイムラインのアノテーションマーカーを更新
-        self._timeline.set_annotations(store.annotations)
 
     def _on_frame_changed(self, frame_number: int) -> None:
         """フレーム番号が変わった時"""
@@ -568,6 +557,7 @@ class MainWindow(QMainWindow):
         self._unsaved_changes = True
         self._save_action.setEnabled(True)
         self._update_annotation_info()
+        self._timeline.set_annotations(self._video_player.annotation_store.annotations)
         self._update_window_title()
 
     def _on_annotation_selected(self, annotation) -> None:
@@ -804,6 +794,7 @@ class MainWindow(QMainWindow):
             self._annotation_file_path = path
             self._unsaved_changes = False
             self._update_annotation_info()
+            self._timeline.set_annotations(self._video_player.annotation_store.annotations)
             self._update_window_title()
             self._status_bar.showMessage(f"読み込みました: {path.name}")
         except Exception as e:
@@ -847,8 +838,7 @@ class MainWindow(QMainWindow):
 
         # 新しい検出結果をマージ（save_undo=Falseで高速化）
         for idx, ann in enumerate(new_store):
-            # プログレスバーの更新（10件ごとに更新してUIフリーズ防止）
-            if show_progress and idx % 10 == 0:
+            if show_progress and idx % 100 == 0:
                 self._status_progress_bar.setValue(idx)
                 # パーセント表示も更新
                 percent = int((idx / total_count) * 100)

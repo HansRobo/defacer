@@ -100,9 +100,7 @@ class TimelineSlider(QSlider):
             # イベントを親に伝播させない（スライダー移動を防ぐ）
             event.accept()
         elif event.button() == Qt.RightButton:
-            # 右クリックの場合は何もしない（コンテキストメニュー用）
-            # ただし、選択範囲外での右クリックなら選択解除してもいいかもしれないが、
-            # ユーザー体験的には保持したほうが安全
+            # 右クリックはコンテキストメニュー用に予約
             event.accept()
         else:
             # 通常の動作
@@ -310,8 +308,6 @@ class TimelineSlider(QSlider):
             for frame_num in self._annotations.keys():
                 if self._annotations[frame_num]:
                     x = val_to_x(frame_num)
-                    # 以前は画面外のアノテーションを端に寄せていたが、ズーム機能追加により
-                    # 画面外は描画しないように修正（緑線が張り付く問題を解消）
                     if 0 <= x < rect.width():
                         ruler_height = 20
                         painter.drawRect(x, ruler_height, 2, rect.height() - ruler_height)
@@ -442,12 +438,6 @@ class TimelineWidget(QWidget):
         
         self._setup_ui()
 
-    def set_duration(self, duration: int) -> None:
-        """期間設定（フレーム数を更新）"""
-        # 互換性のため（使用箇所があるか確認）
-        # self._frame_count = duration
-        pass
-
     def _setup_ui(self) -> None:
         """UIを構築"""
         layout = QVBoxLayout(self)
@@ -558,10 +548,7 @@ class TimelineWidget(QWidget):
         # ズーム倍率表示
         self._zoom_label = QLabel("x1.0")
         self._zoom_label.setStyleSheet("color: gray; font-size: 10px;")
-        # 時間表示の横に追加したいが、layout構成変えるのは手間なので
-        # とりあえずスクロールバーの下か横に... ここではスクロールバーと同じ行には入らないので
-        # コントロール行に追加するのが自然か。
-        controls_layout.addWidget(self._zoom_label) # addStretchの後に追加される
+        controls_layout.addWidget(self._zoom_label)
 
 
         self._slider_dragging = False
@@ -632,8 +619,7 @@ class TimelineWidget(QWidget):
         self._check_auto_scroll(value)
         self._last_frame = value
         
-        # 以前はドラッグ中のみ発火していたが、キー操作やホイール操作（有効な場合）でも
-        # 反応するように変更。プログラマティックな変更は blockSignals で防ぐこと。
+        # プログラマティックな変更は blockSignals で防ぐこと
         self.frame_changed.emit(value)
 
     def _on_slider_pressed(self) -> None:
@@ -765,24 +751,14 @@ class TimelineWidget(QWidget):
             self._update_zoom_view()
             event.accept()
             
-        elif modifiers & Qt.ShiftModifier:
-            # Shift+Wheelは通常水平スクロールだが、ここではスクロールバー操作に割り当て
-             delta = event.angleDelta().y()
-             step = self._scrollbar.pageStep() // 10
-             if delta > 0:
-                 self._scrollbar.setValue(self._scrollbar.value() - step)
-             else:
-                 self._scrollbar.setValue(self._scrollbar.value() + step)
-             event.accept()
         else:
-             # 通常スクロールも許可
-             delta = event.angleDelta().y()
-             step = self._scrollbar.pageStep() // 5
-             if delta > 0:
-                 self._scrollbar.setValue(self._scrollbar.value() - step)
-             else:
-                 self._scrollbar.setValue(self._scrollbar.value() + step)
-             event.accept()
+            # Shift+Wheelは細かくスクロール、通常Wheelは粗くスクロール
+            divisor = 10 if modifiers & Qt.ShiftModifier else 5
+            delta = event.angleDelta().y()
+            step = self._scrollbar.pageStep() // divisor
+            direction = -1 if delta > 0 else 1
+            self._scrollbar.setValue(self._scrollbar.value() + direction * step)
+            event.accept()
 
     def get_visible_range(self) -> tuple[float, float]:
         """現在の表示範囲（開始フレーム、終了フレーム）を取得"""
@@ -795,7 +771,5 @@ class TimelineWidget(QWidget):
         return (start, end)
     
     def resizeEvent(self, event) -> None:
-        """リサイズイベント"""
         super().resizeEvent(event)
         self._update_zoom_view()
-        self.visible_range_changed.emit()

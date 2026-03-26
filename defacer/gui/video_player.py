@@ -357,11 +357,6 @@ class VideoPlayerWidget(QLabel):
         self._selected_index = -1
         self._update_display()
 
-    def set_edit_mode(self, mode: str) -> None:
-        """編集モードを設定（モードレス化により、外部呼び出しは無視）"""
-        # モードレス化: 常に統合モードで動作するため、外部からの呼び出しは無視
-        pass
-
     def set_auto_interpolate(self, enabled: bool) -> None:
         """自動補間モードを設定"""
         self._auto_interpolate = enabled
@@ -1348,17 +1343,9 @@ class VideoPlayerWidget(QLabel):
         self, source_track_id: int, target_track_id: int
     ) -> list[int]:
         """2つのトラックが同じフレームに存在するフレームのリストを返す"""
-        source_frames = set()
-        target_frames = set()
-
-        for ann in self._annotation_store:
-            if ann.track_id == source_track_id:
-                source_frames.add(ann.frame)
-            elif ann.track_id == target_track_id:
-                target_frames.add(ann.frame)
-
-        conflicts = sorted(source_frames & target_frames)
-        return conflicts
+        source_frames = set(self._annotation_store.get_track_frames(source_track_id))
+        target_frames = set(self._annotation_store.get_track_frames(target_track_id))
+        return sorted(source_frames & target_frames)
 
     def _delete_annotation_at_point(self, annotation: Annotation) -> None:
         """指定のアノテーションを削除"""
@@ -1714,12 +1701,10 @@ class VideoPlayerWidget(QLabel):
             pen = QPen(QColor(100, 100, 255), 3)
             painter.setPen(pen)
 
-            # トラック内のすべてのアノテーションを取得して線を引く
-            track_points = []
-            for ann in self._annotation_store:
-                if ann.track_id == track_id:
-                    center = self._bbox_center_scaled(ann.bbox)
-                    track_points.append((ann.frame, center))
+            track_points = [
+                (ann.frame, self._bbox_center_scaled(ann.bbox))
+                for ann in self._annotation_store._track_annotations.get(track_id, {}).values()
+            ]
 
             # フレーム順にソート
             track_points.sort(key=lambda x: x[0])

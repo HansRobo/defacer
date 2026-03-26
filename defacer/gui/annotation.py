@@ -2,6 +2,7 @@
 
 import json
 import numpy as np
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterator, Callable
@@ -133,8 +134,8 @@ class AnnotationStore:
 
     annotations: dict[int, list[Annotation]] = field(default_factory=dict)
     _next_track_id: int = 1
-    _undo_stack: list[dict] = field(default_factory=list)
-    _redo_stack: list[dict] = field(default_factory=list)
+    _undo_stack: deque = field(default_factory=lambda: deque(maxlen=100))
+    _redo_stack: deque = field(default_factory=deque)
 
     # パフォーマンス最適化用キャッシュ
     _total_count: int = 0
@@ -627,12 +628,7 @@ class AnnotationStore:
             t = (frame - start_frame) / (end_frame - start_frame)
             interpolated_bbox = BoundingBox.interpolate(start_ann.bbox, end_ann.bbox, t)
 
-            # 既存のアノテーションがあれば更新、なければ追加
-            existing = None
-            for ann in self.get_frame_annotations(frame):
-                if ann.track_id == track_id:
-                    existing = ann
-                    break
+            existing = self.get_annotation_by_frame_track(frame, track_id)
 
             if existing:
                 existing.bbox = interpolated_bbox
@@ -720,9 +716,6 @@ class AnnotationStore:
         state = self.to_dict()
         self._undo_stack.append(state)
         self._redo_stack.clear()
-        # スタックサイズ制限
-        if len(self._undo_stack) > 100:
-            self._undo_stack.pop(0)
 
     def undo(self) -> bool:
         """アンドゥ"""

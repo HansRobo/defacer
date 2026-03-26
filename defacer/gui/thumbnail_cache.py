@@ -46,14 +46,11 @@ class ThumbnailCache(QObject):
         if track_id in self._cache:
             return self._cache[track_id]
 
-        # トラックのアノテーションをフィルタして最初のフレームを取得
-        annotations = [ann for ann in store if ann.track_id == track_id]
-        if not annotations:
+        frames = store.get_track_frames(track_id)
+        if not frames:
             return None
 
-        # フレーム番号でソートして最初のアノテーションを使用
-        annotations.sort(key=lambda ann: ann.frame)
-        first_ann = annotations[0]
+        first_ann = store.get_annotation_by_frame_track(frames[0], track_id)
         thumbnail = self.get_frame_thumbnail(first_ann.frame, first_ann.bbox, size)
 
         # キャッシュに保存
