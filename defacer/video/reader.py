@@ -16,11 +16,10 @@ class VideoReader:
             path: 動画ファイルのパス
         """
         self.path = Path(path)
-        if not self.path.exists():
-            raise FileNotFoundError(f"動画ファイルが見つかりません: {self.path}")
-
         self._cap = cv2.VideoCapture(str(self.path))
         if not self._cap.isOpened():
+            if not self.path.exists():
+                raise FileNotFoundError(f"動画ファイルが見つかりません: {self.path}")
             raise RuntimeError(f"動画ファイルを開けません: {self.path}")
 
         self._frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -86,7 +85,7 @@ class VideoReader:
         """
         ret, frame = self._cap.read()
         if ret:
-            self._current_frame = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+            self._current_frame += 1
             return frame
         return None
 

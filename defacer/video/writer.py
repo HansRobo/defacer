@@ -1,12 +1,14 @@
 """動画出力クラス"""
 
+import logging
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Callable, Iterator
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class VideoWriter:
@@ -42,18 +44,19 @@ class VideoWriter:
 
         self._process: subprocess.Popen | None = None
         self._frame_count = 0
+        self._stderr_output: str = ""
 
     def open(self) -> None:
         """FFmpegプロセスを開始"""
         cmd = [
             "ffmpeg",
-            "-y",  # 上書き確認なし
+            "-y",
             "-f", "rawvideo",
             "-vcodec", "rawvideo",
             "-s", f"{self.width}x{self.height}",
             "-pix_fmt", "bgr24",
             "-r", str(self.fps),
-            "-i", "-",  # stdin から入力
+            "-i", "-",
             "-c:v", self.codec,
             "-crf", str(self.crf),
             "-preset", self.preset,
@@ -65,7 +68,7 @@ class VideoWriter:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
 
     def write(self, frame: np.ndarray) -> None:
@@ -76,15 +79,23 @@ class VideoWriter:
         if frame.shape[:2] != (self.height, self.width):
             frame = cv2.resize(frame, (self.width, self.height))
 
-        self._process.stdin.write(frame.tobytes())
+        try:
+            self._process.stdin.write(memoryview(frame))
+        except BrokenPipeError:
+            stderr = self._process.stderr.read().decode(errors="replace") if self._process.stderr else ""
+            raise RuntimeError(f"FFmpegプロセスが異常終了しました: {stderr}") from None
         self._frame_count += 1
 
     def close(self) -> None:
         """FFmpegプロセスを終了"""
         if self._process is not None:
             self._process.stdin.close()
-            self._process.wait()
+            self._stderr_output = self._process.stderr.read().decode(errors="replace") if self._process.stderr else ""
+            returncode = self._process.wait()
             self._process = None
+            if returncode != 0:
+                logger.error("FFmpegエンコードエラー: %s", self._stderr_output)
+                raise RuntimeError(f"FFmpegエンコードがエラーコード {returncode} で終了しました")
 
     @property
     def frame_count(self) -> int:
@@ -95,7 +106,14 @@ class VideoWriter:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close()
+        if exc_type is not None:
+            # 既に例外が発生している場合はclose()のエラーを抑制
+            try:
+                self.close()
+            except RuntimeError:
+                pass
+        else:
+            self.close()
 
 
 def export_video_with_audio(
@@ -112,7 +130,7 @@ def export_video_with_audio(
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> bool:
     """
-    音声付きで動画をエクスポート
+    音声付きで動画をエクスポート（単一パス）
 
     Args:
         input_path: 入力動画パス（音声ソース）
@@ -133,52 +151,59 @@ def export_video_with_audio(
     input_path = Path(input_path)
     output_path = Path(output_path)
 
-    # 一時ファイルに映像を出力
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        temp_video_path = Path(tmp.name)
+    # 単一パス: rawフレームをstdinからパイプし、元動画から音声を取得
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-s", f"{width}x{height}",
+        "-pix_fmt", "bgr24",
+        "-r", str(fps),
+        "-i", "-",
+        "-i", str(input_path),
+        "-c:v", codec,
+        "-crf", str(crf),
+        "-preset", preset,
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        "-shortest",
+        str(output_path),
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
 
     try:
-        # 映像を一時ファイルに書き込み
-        with VideoWriter(
-            temp_video_path,
-            width,
-            height,
-            fps,
-            codec,
-            crf,
-            preset,
-        ) as writer:
-            for i, frame in enumerate(frame_generator):
-                writer.write(frame)
-                if progress_callback:
-                    progress_callback(i + 1, total_frames)
+        for i, frame in enumerate(frame_generator):
+            if frame.shape[:2] != (height, width):
+                frame = cv2.resize(frame, (width, height))
+            try:
+                process.stdin.write(memoryview(frame))
+            except BrokenPipeError:
+                break
+            if progress_callback:
+                progress_callback(i + 1, total_frames)
 
-        # FFmpegで音声と結合
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(temp_video_path),  # 映像
-            "-i", str(input_path),  # 音声ソース
-            "-c:v", "copy",  # 映像はコピー
-            "-c:a", "aac",  # 音声はAACでエンコード
-            "-map", "0:v:0",  # 映像は1番目の入力から
-            "-map", "1:a:0?",  # 音声は2番目の入力から（存在すれば）
-            "-shortest",
-            str(output_path),
-        ]
+        process.stdin.close()
+        stderr_output = process.stderr.read().decode(errors="replace") if process.stderr else ""
+        returncode = process.wait()
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if returncode != 0:
+            logger.error("FFmpegエクスポートエラー: %s", stderr_output)
+            return False
+        return True
 
-        return result.returncode == 0
-
-    finally:
-        # 一時ファイルを削除
-        if temp_video_path.exists():
-            temp_video_path.unlink()
+    except Exception:
+        process.kill()
+        process.wait()
+        raise
 
 
 def check_ffmpeg_available() -> bool:
