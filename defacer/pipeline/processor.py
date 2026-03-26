@@ -8,11 +8,8 @@ import numpy as np
 
 from defacer.video.reader import VideoReader
 from defacer.video.writer import export_video_with_audio, check_ffmpeg_available
-from defacer.anonymization.base import Anonymizer
-from defacer.anonymization.mosaic import MosaicAnonymizer
-from defacer.anonymization.blur import GaussianBlurAnonymizer, SolidFillAnonymizer
+from defacer.anonymization import Anonymizer, MosaicAnonymizer
 from defacer.gui.annotation import AnnotationStore
-from defacer.config import AnonymizationType, AnonymizationConfig
 
 
 @dataclass
@@ -25,18 +22,6 @@ class ExportConfig:
     codec: str = "libx264"
     crf: int = 18
     preset: str = "medium"
-
-
-def create_anonymizer(config: AnonymizationConfig) -> Anonymizer:
-    """設定に基づいてAnonymizerを作成"""
-    if config.anonymization_type == AnonymizationType.MOSAIC:
-        return MosaicAnonymizer(block_size=config.mosaic_block_size)
-    elif config.anonymization_type == AnonymizationType.BLUR:
-        return GaussianBlurAnonymizer(kernel_size=config.blur_kernel_size)
-    elif config.anonymization_type == AnonymizationType.SOLID:
-        return SolidFillAnonymizer(color=config.solid_color)
-    else:
-        return MosaicAnonymizer()
 
 
 def process_frame(

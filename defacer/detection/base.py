@@ -61,6 +61,32 @@ class Detection:
         )
 
 
+def find_best_iou_match(
+    target_bbox: tuple[int, int, int, int],
+    candidates,
+    threshold: float = 0.3,
+):
+    """
+    IoUで最も一致する候補を返す。
+
+    Args:
+        target_bbox: 比較対象のbbox (x1, y1, x2, y2)
+        candidates: .bbox 属性を持つオブジェクトのリスト
+        threshold: この値以上のIoUが必要（未満の場合はNoneを返す）
+
+    Returns:
+        最も一致した候補オブジェクト、またはNone
+    """
+    best_iou = 0.0
+    best_match = None
+    for candidate in candidates:
+        iou = compute_iou(target_bbox, candidate.bbox)
+        if iou > best_iou:
+            best_iou = iou
+            best_match = candidate
+    return best_match if best_iou >= threshold else None
+
+
 def compute_iou(bbox1: tuple[int, int, int, int], bbox2: tuple[int, int, int, int]) -> float:
     """2つのバウンディングボックスのIoUを計算"""
     x1_min, y1_min, x1_max, y1_max = bbox1

@@ -3,8 +3,7 @@
 import numpy as np
 
 from defacer.tracking.base import FaceTracker, TrackedFace
-from defacer.detection.base import Detection, compute_iou
-from defacer.detection.yolo11_face import download_yolo11_face_model
+from defacer.detection.base import Detection, compute_iou, find_best_iou_match
 
 
 class UltralyticsTracker(FaceTracker):
@@ -28,24 +27,14 @@ class UltralyticsTracker(FaceTracker):
         self._tracker_type = tracker
         self._confidence_threshold = confidence_threshold
         self._model = None
-        self._initialized = False
 
     def _ensure_initialized(self) -> None:
         """YOLOモデルの遅延初期化"""
-        if self._initialized:
+        if self._model is not None:
             return
 
-        try:
-            from ultralytics import YOLO
-        except ImportError:
-            raise ImportError(
-                "ultralyticsがインストールされていません。\n"
-                "pip install ultralytics でインストールしてください。"
-            )
-
-        model_path = download_yolo11_face_model()
-        self._model = YOLO(model_path)
-        self._initialized = True
+        from defacer.model_loader import load_yolo_model
+        self._model = load_yolo_model()
 
     def track(self, frame: np.ndarray) -> list[TrackedFace]:
         """
@@ -119,40 +108,20 @@ class UltralyticsTracker(FaceTracker):
     def _match_with_detections(
         self, tracked: list[TrackedFace], detections: list[Detection]
     ) -> list[TrackedFace]:
-        """
-        トラッキング結果と検出結果をIoUでマッチング
-
-        Args:
-            tracked: track()の結果
-            detections: 元の検出結果
-
-        Returns:
-            マッチした顔リスト（元のbboxを使用）
-        """
+        """トラッキング結果と検出結果をIoUでマッチングし、元のbboxを使用した顔リストを返す"""
         if not tracked or not detections:
             return tracked
 
-        # マッチング
         matched_faces = []
         for track_face in tracked:
-            best_iou = 0.0
-            best_det = None
-
-            for det in detections:
-                iou = compute_iou(track_face.bbox, det.bbox)
-                if iou > best_iou:
-                    best_iou = iou
-                    best_det = det
-
-            if best_det is not None and best_iou > 0.3:  # IoU閾値
-                # 元のbboxを使用
-                matched_face = TrackedFace(
+            best_det = find_best_iou_match(track_face.bbox, detections, threshold=0.3)
+            if best_det is not None:
+                matched_faces.append(TrackedFace(
                     track_id=track_face.track_id,
                     bbox=best_det.bbox,
                     confidence=best_det.confidence,
                     age=track_face.age,
-                )
-                matched_faces.append(matched_face)
+                ))
 
         return matched_faces
 
@@ -163,7 +132,5 @@ class UltralyticsTracker(FaceTracker):
     def reset(self) -> None:
         """トラッカーをリセット（新しいビデオ用）"""
         if self._model is not None:
-            # Ultralytics の内部状態をクリア
             self._model.predictor = None
-            self._initialized = False
             self._model = None

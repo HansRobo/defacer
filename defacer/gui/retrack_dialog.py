@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import AnnotationStore, Annotation
-from defacer.detection.base import Detection, compute_iou
+from defacer.detection.base import Detection, find_best_iou_match
 from defacer.gui.worker_dialog import WorkerDialog
 from defacer.gui.frame_range_selector import FrameRangeSelector
 
@@ -52,32 +52,12 @@ class RetrackWorker(QThread):
         self._cancelled = True
 
     def _build_track_id_mapping(self, anns: list[Annotation], tracked: list) -> dict:
-        """
-        bbox位置でマッチングしてtrack_idマッピングを構築
-
-        Args:
-            anns: 現在のフレームのアノテーションリスト
-            tracked: トラッキング結果リスト
-
-        Returns:
-            {(frame, ann_index): new_track_id} のマッピング
-        """
+        """bbox位置でマッチングしてtrack_idマッピングを構築"""
         mapping = {}
-
         for idx, ann in enumerate(anns):
-            best_match = None
-            best_iou = 0.0
-
-            for t in tracked:
-                iou = compute_iou(ann.bbox.to_tuple(), t.bbox)
-                if iou > best_iou:
-                    best_iou = iou
-                    best_match = t
-
-            # IoUが0.5以上で一致とみなす
-            if best_match and best_iou > 0.5:
+            best_match = find_best_iou_match(ann.bbox.to_tuple(), tracked, threshold=0.5)
+            if best_match is not None:
                 mapping[idx] = best_match.track_id
-
         return mapping
 
     def run(self):

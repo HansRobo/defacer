@@ -1,7 +1,8 @@
 """トラック統合サジェスト機能"""
 
 from dataclasses import dataclass
-from defacer.gui.annotation import AnnotationStore, Annotation
+from defacer.models import Annotation
+from defacer.gui.annotation import AnnotationStore
 
 
 class UnionFind:

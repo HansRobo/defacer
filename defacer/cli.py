@@ -144,9 +144,9 @@ def run_auto(args: argparse.Namespace) -> int:
         from defacer.detection import get_available_detectors, create_detector
         from defacer.video.reader import VideoReader
         from defacer.video.writer import check_ffmpeg_available
-        from defacer.gui.annotation import AnnotationStore, Annotation, BoundingBox
-        from defacer.anonymization.mosaic import MosaicAnonymizer
-        from defacer.anonymization.blur import GaussianBlurAnonymizer, SolidFillAnonymizer
+        from defacer.models import Annotation, BoundingBox
+        from defacer.gui.annotation import AnnotationStore
+        from defacer.anonymization import create_anonymizer
         from defacer.pipeline.processor import export_processed_video, ExportConfig
     except ImportError as e:
         print(f"エラー: 依存関係が不足しています: {e}", file=sys.stderr)
@@ -174,13 +174,7 @@ def run_auto(args: argparse.Namespace) -> int:
         print(f"エラー: 検出器の初期化に失敗: {e}", file=sys.stderr)
         return 1
 
-    # 匿名化器を作成
-    if args.mosaic_type == "mosaic":
-        anonymizer = MosaicAnonymizer(block_size=args.block_size)
-    elif args.mosaic_type == "blur":
-        anonymizer = GaussianBlurAnonymizer(kernel_size=99)
-    else:
-        anonymizer = SolidFillAnonymizer()
+    anonymizer = create_anonymizer(args.mosaic_type, block_size=args.block_size)
 
     # トラッカーを作成（オプション）
     tracker = None

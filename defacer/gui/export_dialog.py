@@ -19,8 +19,7 @@ from PyQt5.QtWidgets import (
 )
 
 from defacer.gui.annotation import AnnotationStore
-from defacer.anonymization.mosaic import MosaicAnonymizer
-from defacer.anonymization.blur import GaussianBlurAnonymizer, SolidFillAnonymizer
+from defacer.anonymization import create_anonymizer
 from defacer.pipeline.processor import export_processed_video, ExportConfig
 from defacer.video.writer import check_ffmpeg_available
 from defacer.gui.worker_dialog import WorkerDialog
@@ -216,13 +215,12 @@ class ExportDialog(WorkerDialog):
         self._blur_kernel_label.setVisible(is_blur)
 
     def _create_anonymizer(self):
-        mosaic_type = self._mosaic_type.currentIndex()
-        if mosaic_type == 0:  # モザイク
-            return MosaicAnonymizer(block_size=self._block_size.value())
-        elif mosaic_type == 1:  # ぼかし
-            return GaussianBlurAnonymizer(kernel_size=self._blur_kernel.value())
-        else:  # 塗りつぶし
-            return SolidFillAnonymizer()
+        types = ["mosaic", "blur", "solid"]
+        return create_anonymizer(
+            types[self._mosaic_type.currentIndex()],
+            block_size=self._block_size.value(),
+            kernel_size=self._blur_kernel.value(),
+        )
 
     def _start_export(self):
         output_path = Path(self._output_path.text())

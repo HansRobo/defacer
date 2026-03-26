@@ -45,30 +45,18 @@ class YOLO11FaceDetector(FaceDetector):
         super().__init__(confidence_threshold)
         self._model = None
         self._model_path = model_path
-        self._initialized = False
 
     def _ensure_initialized(self) -> None:
         """モデルの遅延初期化"""
-        if self._initialized:
+        if self._model is not None:
             return
 
-        try:
-            from ultralytics import YOLO
-        except ImportError:
-            raise ImportError(
-                "ultralyticsがインストールされていません。\n"
-                "pip install ultralytics でインストールしてください。"
-            )
-
-        if self._model_path:
-            self._model = YOLO(self._model_path)
-        else:
+        from defacer.model_loader import load_yolo_model
+        if not self._model_path:
             print("YOLOv11顔検出モデルをダウンロード中...")
-            model_path = download_yolo11_face_model()
-            print(f"ダウンロード完了: {model_path}")
-            self._model = YOLO(model_path)
-
-        self._initialized = True
+        self._model = load_yolo_model(self._model_path)
+        if not self._model_path:
+            print("ダウンロード完了")
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """
