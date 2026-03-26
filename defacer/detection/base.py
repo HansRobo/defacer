@@ -61,6 +61,27 @@ class Detection:
         )
 
 
+def compute_iou(bbox1: tuple[int, int, int, int], bbox2: tuple[int, int, int, int]) -> float:
+    """2つのバウンディングボックスのIoUを計算"""
+    x1_min, y1_min, x1_max, y1_max = bbox1
+    x2_min, y2_min, x2_max, y2_max = bbox2
+
+    inter_x1 = max(x1_min, x2_min)
+    inter_y1 = max(y1_min, y2_min)
+    inter_x2 = min(x1_max, x2_max)
+    inter_y2 = min(y1_max, y2_max)
+
+    if inter_x1 >= inter_x2 or inter_y1 >= inter_y2:
+        return 0.0
+
+    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    area1 = (x1_max - x1_min) * (y1_max - y1_min)
+    area2 = (x2_max - x2_min) * (y2_max - y2_min)
+    union_area = area1 + area2 - inter_area
+
+    return inter_area / union_area if union_area > 0 else 0.0
+
+
 class FaceDetector(ABC):
     """顔検知の抽象ベースクラス"""
 

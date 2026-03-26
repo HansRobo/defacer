@@ -3,7 +3,8 @@
 import numpy as np
 
 from defacer.tracking.base import FaceTracker, TrackedFace
-from defacer.detection.base import Detection
+from defacer.detection.base import Detection, compute_iou
+from defacer.detection.yolo11_face import download_yolo11_face_model
 
 
 class UltralyticsTracker(FaceTracker):
@@ -42,29 +43,7 @@ class UltralyticsTracker(FaceTracker):
                 "pip install ultralytics でインストールしてください。"
             )
 
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError:
-            raise ImportError(
-                "huggingface_hubがインストールされていません。\n"
-                "pip install huggingface-hub でインストールしてください。"
-            )
-
-        # YOLOv11顔検出モデルをHugging Face Hubからダウンロード
-        try:
-            model_path = hf_hub_download(
-                repo_id="AdamCodd/YOLOv11n-face-detection",
-                filename="model.pt",
-                cache_dir=None,  # デフォルトキャッシュを使用
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"YOLOv11顔検出モデルのダウンロードに失敗しました: {e}\n"
-                "手動でダウンロードしてください: "
-                "https://huggingface.co/AdamCodd/YOLOv11n-face-detection"
-            )
-
-        # YOLO11 顔検出モデルを読み込み
+        model_path = download_yolo11_face_model()
         self._model = YOLO(model_path)
         self._initialized = True
 
@@ -152,26 +131,6 @@ class UltralyticsTracker(FaceTracker):
         """
         if not tracked or not detections:
             return tracked
-
-        # IoU計算
-        def compute_iou(bbox1: tuple, bbox2: tuple) -> float:
-            x1_min, y1_min, x1_max, y1_max = bbox1
-            x2_min, y2_min, x2_max, y2_max = bbox2
-
-            inter_x_min = max(x1_min, x2_min)
-            inter_y_min = max(y1_min, y2_min)
-            inter_x_max = min(x1_max, x2_max)
-            inter_y_max = min(y1_max, y2_max)
-
-            if inter_x_max <= inter_x_min or inter_y_max <= inter_y_min:
-                return 0.0
-
-            inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
-            bbox1_area = (x1_max - x1_min) * (y1_max - y1_min)
-            bbox2_area = (x2_max - x2_min) * (y2_max - y2_min)
-            union_area = bbox1_area + bbox2_area - inter_area
-
-            return inter_area / union_area if union_area > 0 else 0.0
 
         # マッチング
         matched_faces = []

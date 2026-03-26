@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Callable, Iterator
 
 import numpy as np
 
@@ -18,7 +18,7 @@ from defacer.config import AnonymizationType, AnonymizationConfig
 @dataclass
 class ExportConfig:
     """エクスポート設定"""
-    anonymizer: Any = None  # Anonymizer | None。Noneの場合はMosaicAnonymizer
+    anonymizer: Anonymizer | None = None
     ellipse: bool = True
     bbox_scale: float = 1.0
     interpolate: bool = True

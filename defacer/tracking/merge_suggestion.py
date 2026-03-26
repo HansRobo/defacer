@@ -1,7 +1,6 @@
 """トラック統合サジェスト機能"""
 
 from dataclasses import dataclass
-from typing import Dict, List, Set
 from defacer.gui.annotation import AnnotationStore, Annotation
 
 
@@ -119,12 +118,6 @@ def collect_track_infos(store: AnnotationStore) -> list[TrackInfo]:
     track_infos.sort(key=lambda t: t.frame_min)
 
     return track_infos
-
-
-def _bbox_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
-    """バウンディングボックスの中心座標を計算"""
-    x1, y1, x2, y2 = bbox
-    return ((x1 + x2) / 2, (y1 + y2) / 2)
 
 
 def _bbox_size(bbox: tuple[int, int, int, int]) -> tuple[int, int]:

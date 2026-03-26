@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import AnnotationStore, Annotation
-from defacer.detection.base import Detection
+from defacer.detection.base import Detection, compute_iou
 from defacer.gui.worker_dialog import WorkerDialog
 from defacer.gui.frame_range_selector import FrameRangeSelector
 
@@ -51,32 +51,6 @@ class RetrackWorker(QThread):
     def cancel(self):
         self._cancelled = True
 
-    def _compute_iou(self, bbox1: tuple[int, int, int, int], bbox2: tuple[int, int, int, int]) -> float:
-        """IoU（Intersection over Union）を計算"""
-        x1_1, y1_1, x2_1, y2_1 = bbox1
-        x1_2, y1_2, x2_2, y2_2 = bbox2
-
-        # 交差領域
-        inter_x1 = max(x1_1, x1_2)
-        inter_y1 = max(y1_1, y1_2)
-        inter_x2 = min(x2_1, x2_2)
-        inter_y2 = min(y2_1, y2_2)
-
-        if inter_x1 >= inter_x2 or inter_y1 >= inter_y2:
-            return 0.0
-
-        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-
-        # 結合領域
-        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union_area = area1 + area2 - inter_area
-
-        if union_area == 0:
-            return 0.0
-
-        return inter_area / union_area
-
     def _build_track_id_mapping(self, anns: list[Annotation], tracked: list) -> dict:
         """
         bbox位置でマッチングしてtrack_idマッピングを構築
@@ -95,7 +69,7 @@ class RetrackWorker(QThread):
             best_iou = 0.0
 
             for t in tracked:
-                iou = self._compute_iou(ann.bbox.to_tuple(), t.bbox)
+                iou = compute_iou(ann.bbox.to_tuple(), t.bbox)
                 if iou > best_iou:
                     best_iou = iou
                     best_match = t

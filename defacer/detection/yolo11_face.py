@@ -5,6 +5,30 @@ import numpy as np
 from defacer.detection.base import FaceDetector, Detection
 
 
+def download_yolo11_face_model() -> str:
+    """YOLOv11顔検出モデルをHugging Face Hubからダウンロードしてパスを返す"""
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        raise ImportError(
+            "huggingface_hubがインストールされていません。\n"
+            "pip install huggingface-hub でインストールしてください。"
+        )
+
+    try:
+        return hf_hub_download(
+            repo_id="AdamCodd/YOLOv11n-face-detection",
+            filename="model.pt",
+            cache_dir=None,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"YOLOv11顔検出モデルのダウンロードに失敗しました: {e}\n"
+            "手動でダウンロードしてください: "
+            "https://huggingface.co/AdamCodd/YOLOv11n-face-detection"
+        )
+
+
 class YOLO11FaceDetector(FaceDetector):
     """YOLOv11-Faceを使用した高速顔検知（WIDERFACE訓練済み）"""
 
@@ -39,31 +63,9 @@ class YOLO11FaceDetector(FaceDetector):
         if self._model_path:
             self._model = YOLO(self._model_path)
         else:
-            # YOLOv11n顔検出モデルを使用（WIDERFACE訓練済み）
-            # HuggingFace Hubから自動ダウンロード
-            try:
-                from huggingface_hub import hf_hub_download
-            except ImportError:
-                raise ImportError(
-                    "huggingface_hubがインストールされていません。\n"
-                    "pip install huggingface-hub でインストールしてください。"
-                )
-
             print("YOLOv11顔検出モデルをダウンロード中...")
-            try:
-                model_path = hf_hub_download(
-                    repo_id="AdamCodd/YOLOv11n-face-detection",
-                    filename="model.pt",
-                    cache_dir=None,  # デフォルトキャッシュを使用
-                )
-                print(f"ダウンロード完了: {model_path}")
-            except Exception as e:
-                raise RuntimeError(
-                    f"YOLOv11顔検出モデルのダウンロードに失敗しました: {e}\n"
-                    "手動でダウンロードしてください: "
-                    "https://huggingface.co/AdamCodd/YOLOv11n-face-detection"
-                )
-
+            model_path = download_yolo11_face_model()
+            print(f"ダウンロード完了: {model_path}")
             self._model = YOLO(model_path)
 
         self._initialized = True
