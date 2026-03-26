@@ -7,9 +7,10 @@ from typing import Optional
 import cv2
 import numpy as np
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QPixmap
 
 from defacer.gui.annotation import AnnotationStore, BoundingBox
+from defacer.gui.utils import bgr_to_qimage
 
 
 class ThumbnailCache(QObject):
@@ -100,16 +101,7 @@ class ThumbnailCache(QObject):
         # リサイズ
         face_img = cv2.resize(face_img, size, interpolation=cv2.INTER_AREA)
 
-        # BGR -> RGB
-        face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-
-        # numpy -> QPixmap
-        h, w, ch = face_img.shape
-        bytes_per_line = ch * w
-        q_image = QImage(face_img.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_image)
-
-        return pixmap
+        return QPixmap.fromImage(bgr_to_qimage(face_img))
 
     def preload_tracks(self, track_ids: list[int], store: AnnotationStore) -> None:
         """複数トラックのサムネイルをバックグラウンドでプリロード

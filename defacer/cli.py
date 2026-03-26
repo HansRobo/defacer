@@ -147,7 +147,7 @@ def run_auto(args: argparse.Namespace) -> int:
         from defacer.gui.annotation import AnnotationStore, Annotation, BoundingBox
         from defacer.anonymization.mosaic import MosaicAnonymizer
         from defacer.anonymization.blur import GaussianBlurAnonymizer, SolidFillAnonymizer
-        from defacer.pipeline.processor import export_processed_video
+        from defacer.pipeline.processor import export_processed_video, ExportConfig
     except ImportError as e:
         print(f"エラー: 依存関係が不足しています: {e}", file=sys.stderr)
         return 1
@@ -230,21 +230,12 @@ def run_auto(args: argparse.Namespace) -> int:
                 # 統合トラッキング: detect + track を一度に
                 tracked = tracker.track(frame)
                 for t in tracked:
-                    x1, y1, x2, y2 = t.bbox
-                    # バウンディングボックスを拡大
+                    bbox = BoundingBox(*t.bbox)
                     if args.bbox_scale != 1.0:
-                        cx = (x1 + x2) // 2
-                        cy = (y1 + y2) // 2
-                        w = int((x2 - x1) * args.bbox_scale)
-                        h = int((y2 - y1) * args.bbox_scale)
-                        x1 = max(0, cx - w // 2)
-                        y1 = max(0, cy - h // 2)
-                        x2 = min(reader.width, cx + w // 2)
-                        y2 = min(reader.height, cy + h // 2)
-
+                        bbox = bbox.scale_from_center(args.bbox_scale, reader.width, reader.height)
                     ann = Annotation(
                         frame=frame_num,
-                        bbox=BoundingBox(x1, y1, x2, y2),
+                        bbox=bbox,
                         track_id=t.track_id,
                         is_manual=False,
                         confidence=t.confidence,
@@ -258,21 +249,12 @@ def run_auto(args: argparse.Namespace) -> int:
                     # 旧APIトラッカー（DeepSORTなど）
                     tracked = tracker.update(detections, frame)
                     for t in tracked:
-                        x1, y1, x2, y2 = t.bbox
-                        # バウンディングボックスを拡大
+                        bbox = BoundingBox(*t.bbox)
                         if args.bbox_scale != 1.0:
-                            cx = (x1 + x2) // 2
-                            cy = (y1 + y2) // 2
-                            w = int((x2 - x1) * args.bbox_scale)
-                            h = int((y2 - y1) * args.bbox_scale)
-                            x1 = max(0, cx - w // 2)
-                            y1 = max(0, cy - h // 2)
-                            x2 = min(reader.width, cx + w // 2)
-                            y2 = min(reader.height, cy + h // 2)
-
+                            bbox = bbox.scale_from_center(args.bbox_scale, reader.width, reader.height)
                         ann = Annotation(
                             frame=frame_num,
-                            bbox=BoundingBox(x1, y1, x2, y2),
+                            bbox=bbox,
                             track_id=t.track_id,
                             is_manual=False,
                             confidence=t.confidence,
@@ -281,21 +263,12 @@ def run_auto(args: argparse.Namespace) -> int:
                 else:
                     # トラッキングなし
                     for det in detections:
-                        x1, y1, x2, y2 = det.bbox
-                        # バウンディングボックスを拡大
+                        bbox = BoundingBox(*det.bbox)
                         if args.bbox_scale != 1.0:
-                            cx = (x1 + x2) // 2
-                            cy = (y1 + y2) // 2
-                            w = int((x2 - x1) * args.bbox_scale)
-                            h = int((y2 - y1) * args.bbox_scale)
-                            x1 = max(0, cx - w // 2)
-                            y1 = max(0, cy - h // 2)
-                            x2 = min(reader.width, cx + w // 2)
-                            y2 = min(reader.height, cy + h // 2)
-
+                            bbox = bbox.scale_from_center(args.bbox_scale, reader.width, reader.height)
                         ann = Annotation(
                             frame=frame_num,
-                            bbox=BoundingBox(x1, y1, x2, y2),
+                            bbox=bbox,
                             track_id=next_track_id,
                             is_manual=False,
                             confidence=det.confidence,
@@ -321,16 +294,16 @@ def run_auto(args: argparse.Namespace) -> int:
                 pbar.n = current
                 pbar.refresh()
 
+            config = ExportConfig(
+                anonymizer=anonymizer,
+                crf=args.crf,
+                preset=args.preset,
+            )
             success = export_processed_video(
                 args.input,
                 args.output,
                 store,
-                anonymizer,
-                ellipse=True,
-                bbox_scale=1.0,  # 検出時に既に拡大済み
-                codec="libx264",
-                crf=args.crf,
-                preset=args.preset,
+                config,
                 progress_callback=update_pbar,
             )
     except Exception as e:

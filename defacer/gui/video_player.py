@@ -19,6 +19,7 @@ import numpy as np
 
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import BoundingBox, Annotation, AnnotationStore
+from defacer.gui.utils import bgr_to_qimage
 
 
 @dataclass
@@ -435,26 +436,14 @@ class VideoPlayerWidget(QLabel):
         if frame is None:
             return None
             
-        # BGRからRGBに変換
-        frame_rgb = frame[:, :, ::-1].copy()
-        h, w, ch = frame_rgb.shape
-        bytes_per_line = ch * w
-        q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        
-        return q_img.copy()  # コピーして返す（参照切れ防止）
+        return bgr_to_qimage(frame)
 
     def _update_display(self) -> None:
         """表示を更新"""
         if self._current_frame is None:
             return
 
-        # BGRからRGBに変換
-        frame_rgb = self._current_frame[:, :, ::-1].copy()
-        h, w, ch = frame_rgb.shape
-
-        # QImageに変換
-        bytes_per_line = ch * w
-        q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        q_img = bgr_to_qimage(self._current_frame)
 
         # ウィジェットサイズに合わせてスケール
         pixmap = QPixmap.fromImage(q_img)
@@ -465,7 +454,7 @@ class VideoPlayerWidget(QLabel):
         )
 
         # スケールとオフセットを計算（座標変換用）
-        self._scale = scaled_pixmap.width() / w
+        self._scale = scaled_pixmap.width() / q_img.width()
         self._offset_x = (self.width() - scaled_pixmap.width()) // 2
         self._offset_y = (self.height() - scaled_pixmap.height()) // 2
 
@@ -1430,21 +1419,13 @@ class VideoPlayerWidget(QLabel):
         bbox_scale = 1.1
 
         for det in detections:
-            # バウンディングボックスを拡大（DetectionDialogと同じロジック）
-            x1, y1, x2, y2 = det.bbox
+            bbox = BoundingBox(*det.bbox)
             if bbox_scale != 1.0:
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
-                new_w = int((x2 - x1) * bbox_scale)
-                new_h = int((y2 - y1) * bbox_scale)
-                x1 = max(0, cx - new_w // 2)
-                y1 = max(0, cy - new_h // 2)
-                x2 = cx + new_w // 2
-                y2 = cy + new_h // 2
+                bbox = bbox.scale_from_center(bbox_scale)
 
             ann = Annotation(
                 frame=frame_number,
-                bbox=BoundingBox(x1, y1, x2, y2),
+                bbox=bbox,
                 track_id=self._annotation_store.new_track_id(),
                 is_manual=False,
                 confidence=det.confidence,
@@ -1703,7 +1684,7 @@ class VideoPlayerWidget(QLabel):
 
             track_points = [
                 (ann.frame, self._bbox_center_scaled(ann.bbox))
-                for ann in self._annotation_store._track_annotations.get(track_id, {}).values()
+                for ann in self._annotation_store.get_track_annotations(track_id)
             ]
 
             # フレーム順にソート

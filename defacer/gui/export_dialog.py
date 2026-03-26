@@ -4,7 +4,6 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
-    QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -22,8 +21,9 @@ from PyQt5.QtWidgets import (
 from defacer.gui.annotation import AnnotationStore
 from defacer.anonymization.mosaic import MosaicAnonymizer
 from defacer.anonymization.blur import GaussianBlurAnonymizer, SolidFillAnonymizer
-from defacer.pipeline.processor import export_processed_video
+from defacer.pipeline.processor import export_processed_video, ExportConfig
 from defacer.video.writer import check_ffmpeg_available
+from defacer.gui.worker_dialog import WorkerDialog
 
 
 class ExportWorker(QThread):
@@ -37,25 +37,13 @@ class ExportWorker(QThread):
         input_path: Path,
         output_path: Path,
         annotations: AnnotationStore,
-        anonymizer,
-        ellipse: bool,
-        bbox_scale: float,
-        codec: str,
-        crf: int,
-        preset: str,
-        interpolate: bool,
+        config: ExportConfig,
     ):
         super().__init__()
         self.input_path = input_path
         self.output_path = output_path
         self.annotations = annotations
-        self.anonymizer = anonymizer
-        self.ellipse = ellipse
-        self.bbox_scale = bbox_scale
-        self.codec = codec
-        self.crf = crf
-        self.preset = preset
-        self.interpolate = interpolate
+        self.config = config
 
     def run(self):
         try:
@@ -63,14 +51,8 @@ class ExportWorker(QThread):
                 self.input_path,
                 self.output_path,
                 self.annotations,
-                self.anonymizer,
-                self.ellipse,
-                self.bbox_scale,
-                self.codec,
-                self.crf,
-                self.preset,
+                self.config,
                 lambda current, total: self.progress.emit(current, total),
-                self.interpolate,
             )
             if success:
                 self.finished.emit(True, "エクスポートが完了しました")
@@ -80,7 +62,7 @@ class ExportWorker(QThread):
             self.finished.emit(False, str(e))
 
 
-class ExportDialog(QDialog):
+class ExportDialog(WorkerDialog):
     """エクスポート設定ダイアログ"""
 
     def __init__(
@@ -89,14 +71,9 @@ class ExportDialog(QDialog):
         input_path: Path,
         annotations: AnnotationStore,
     ):
-        super().__init__(parent)
+        super().__init__(parent, "動画をエクスポート", min_width=500)
         self.input_path = input_path
         self.annotations = annotations
-        self._worker: ExportWorker | None = None
-
-        self.setWindowTitle("動画をエクスポート")
-        self.setMinimumWidth(500)
-        self.setModal(True)
 
         self._setup_ui()
 
@@ -212,33 +189,12 @@ class ExportDialog(QDialog):
 
         layout.addWidget(encode_group)
 
-        # 進捗
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setVisible(False)
-        layout.addWidget(self._progress_bar)
+        self._add_progress_widgets(layout)
+        self._add_button_row(layout, "エクスポート", self._start_export)
 
-        self._status_label = QLabel("")
-        layout.addWidget(self._status_label)
-
-        # ボタン
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-
-        self._cancel_btn = QPushButton("キャンセル")
-        self._cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self._cancel_btn)
-
-        self._export_btn = QPushButton("エクスポート")
-        self._export_btn.clicked.connect(self._start_export)
-        button_layout.addWidget(self._export_btn)
-
-        layout.addLayout(button_layout)
-
-        # FFmpegチェック
         if not check_ffmpeg_available():
-            self._export_btn.setEnabled(False)
-            self._status_label.setText("エラー: FFmpegが見つかりません")
-            self._status_label.setStyleSheet("color: red;")
+            self._action_btn.setEnabled(False)
+            self._show_error("FFmpegが見つかりません")
 
     def _browse_output(self):
         file_path, _ = QFileDialog.getSaveFileName(
@@ -281,58 +237,43 @@ class ExportDialog(QDialog):
             if reply != QMessageBox.Yes:
                 return
 
-        self._export_btn.setEnabled(False)
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setValue(0)
         self._status_label.setText("エクスポート中...")
 
-        interpolate = self._auto_interpolate.isChecked()
-
-        self._worker = ExportWorker(
-            self.input_path,
-            output_path,
-            self.annotations,
-            self._create_anonymizer(),
-            self._ellipse_check.isChecked(),
-            self._bbox_scale.value() / 100.0,
-            "libx264",
-            self._crf.value(),
-            self._preset.currentText(),
-            interpolate,
+        config = ExportConfig(
+            anonymizer=self._create_anonymizer(),
+            ellipse=self._ellipse_check.isChecked(),
+            bbox_scale=self._bbox_scale.value() / 100.0,
+            interpolate=self._auto_interpolate.isChecked(),
+            crf=self._crf.value(),
+            preset=self._preset.currentText(),
         )
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.start()
+        worker = ExportWorker(self.input_path, output_path, self.annotations, config)
+        worker.finished.connect(self._on_finished)
+        self._start_worker(worker)
 
     def _on_progress(self, current, total):
-        self._progress_bar.setMaximum(total)
-        self._progress_bar.setValue(current)
+        super()._on_progress(current, total)
         self._status_label.setText(f"処理中: {current}/{total} フレーム")
 
     def _on_finished(self, success, message):
-        self._export_btn.setEnabled(True)
-        self._progress_bar.setVisible(False)
-
+        self._finish_worker(success)
         if success:
             self._status_label.setText(message)
             QMessageBox.information(self, "完了", message)
             self.accept()
         else:
-            self._status_label.setText(f"エラー: {message}")
-            self._status_label.setStyleSheet("color: red;")
+            self._show_error(message)
 
-    def reject(self):
+    def _on_cancel(self):
+        """エクスポート中は確認ダイアログを表示"""
         if self._worker and self._worker.isRunning():
-            # ワーカーが実行中の場合は確認
             reply = QMessageBox.question(
-                self,
-                "確認",
-                "エクスポートを中止しますか？",
+                self, "確認", "エクスポートを中止しますか？",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
                 return
-            self._worker.terminate()
-            self._worker.wait()
+        super()._on_cancel()
 
-        super().reject()
+    def reject(self):
+        self._on_cancel()

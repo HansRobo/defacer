@@ -4,7 +4,6 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
-    QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -12,17 +11,16 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QSpinBox,
-    QCheckBox,
     QProgressBar,
     QGroupBox,
     QMessageBox,
-    QRadioButton,
-    QButtonGroup,
 )
 
 from defacer.detection import get_available_detectors, create_detector
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import AnnotationStore, Annotation, BoundingBox
+from defacer.gui.worker_dialog import WorkerDialog
+from defacer.gui.frame_range_selector import FrameRangeSelector
 
 
 class DetectionWorker(QThread):
@@ -145,11 +143,10 @@ class DetectionWorker(QThread):
             reader.release()
 
 
-class DetectionDialog(QDialog):
+class DetectionDialog(WorkerDialog):
     """自動検出設定ダイアログ"""
 
     detections_ready = pyqtSignal(object)  # AnnotationStore
-
 
     def __init__(
         self,
@@ -159,18 +156,13 @@ class DetectionDialog(QDialog):
         current_frame: int,
         initial_range: tuple[int, int] | None = None,
     ):
-        super().__init__(parent)
+        super().__init__(parent, "自動顔検出")
         self.video_path = video_path
         self.frame_count = frame_count
         self.current_frame = current_frame
         self.initial_range = initial_range
-        self._worker: DetectionWorker | None = None
         self._temp_store = AnnotationStore()
         self._next_track_id = 1
-
-        self.setWindowTitle("自動顔検出")
-        self.setMinimumWidth(450)
-        self.setModal(True)
 
         self._setup_ui()
 
@@ -226,51 +218,18 @@ class DetectionDialog(QDialog):
         layout.addWidget(detector_group)
 
         # 範囲設定
-        range_group = QGroupBox("検出範囲")
-        range_layout = QVBoxLayout(range_group)
+        self._range_selector = FrameRangeSelector(
+            self.frame_count,
+            self.current_frame,
+            include_current_frame_option=True,
+            initial_range=self.initial_range,
+            title="検出範囲",
+        )
+        layout.addWidget(self._range_selector)
 
-        # 範囲選択
-        self._range_all = QRadioButton("全フレーム")
-        self._range_current = QRadioButton("現在のフレームのみ")
-        self._range_custom = QRadioButton("範囲を指定")
-
-        if self.initial_range:
-            self._range_custom.setChecked(True)
-        else:
-            self._range_all.setChecked(True)
-
-        range_layout.addWidget(self._range_all)
-        range_layout.addWidget(self._range_current)
-        range_layout.addWidget(self._range_custom)
-
-        # カスタム範囲
-        custom_layout = QHBoxLayout()
-        custom_layout.addWidget(QLabel("開始:"))
-        self._start_frame = QSpinBox()
-        self._start_frame.setRange(0, self.frame_count - 1)
-        
-        start_val = 0
-        if self.initial_range:
-            start_val = self.initial_range[0]
-        self._start_frame.setValue(start_val)
-        
-        custom_layout.addWidget(self._start_frame)
-
-        custom_layout.addWidget(QLabel("終了:"))
-        self._end_frame = QSpinBox()
-        self._end_frame.setRange(0, self.frame_count - 1)
-        
-        end_val = self.frame_count - 1
-        if self.initial_range:
-            end_val = self.initial_range[1]
-        self._end_frame.setValue(end_val)
-        
-        custom_layout.addWidget(self._end_frame)
-
-        custom_layout.addStretch()
-        range_layout.addLayout(custom_layout)
-
-        # フレームスキップ
+        # フレームスキップ（検出固有設定）
+        skip_group = QGroupBox("詳細設定")
+        skip_layout_v = QVBoxLayout(skip_group)
         skip_layout = QHBoxLayout()
         skip_layout.addWidget(QLabel("フレームスキップ:"))
         self._frame_skip = QSpinBox()
@@ -279,76 +238,27 @@ class DetectionDialog(QDialog):
         self._frame_skip.setToolTip("N=0で全フレーム、N=1で1フレームおきに検出")
         skip_layout.addWidget(self._frame_skip)
         skip_layout.addStretch()
-        range_layout.addLayout(skip_layout)
+        skip_layout_v.addLayout(skip_layout)
+        layout.addWidget(skip_group)
 
-        layout.addWidget(range_group)
-
-        # 範囲選択の連動
-        self._range_all.toggled.connect(self._on_range_changed)
-        self._range_current.toggled.connect(self._on_range_changed)
-        self._range_custom.toggled.connect(self._on_range_changed)
-        self._on_range_changed()
-
-        # 進捗
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setVisible(False)
-        layout.addWidget(self._progress_bar)
-
-        self._status_label = QLabel("")
-        layout.addWidget(self._status_label)
-
-        # ボタン
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-
-        self._cancel_btn = QPushButton("キャンセル")
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        button_layout.addWidget(self._cancel_btn)
-
-        self._detect_btn = QPushButton("検出開始")
-        self._detect_btn.clicked.connect(self._start_detection)
-        self._detect_btn.setEnabled(bool(available))
-        button_layout.addWidget(self._detect_btn)
-
-        layout.addLayout(button_layout)
-
-    def _on_range_changed(self):
-        """範囲選択が変更された時"""
-        is_custom = self._range_custom.isChecked()
-        self._start_frame.setEnabled(is_custom)
-        self._end_frame.setEnabled(is_custom)
-        self._frame_skip.setEnabled(not self._range_current.isChecked())
-
-        if self._range_current.isChecked():
-            self._start_frame.setValue(self.current_frame)
-            self._end_frame.setValue(self.current_frame)
-        elif self._range_all.isChecked():
-            self._start_frame.setValue(0)
-            self._end_frame.setValue(self.frame_count - 1)
+        self._add_progress_widgets(layout)
+        self._add_button_row(layout, "検出開始", self._start_detection)
+        self._action_btn.setEnabled(bool(available))
 
     def _start_detection(self):
         """検出を開始"""
-        if self._range_current.isChecked():
-            start_frame = self.current_frame
-            end_frame = self.current_frame
-        elif self._range_custom.isChecked():
-            start_frame = self._start_frame.value()
-            end_frame = self._end_frame.value()
-        else:
-            start_frame = 0
-            end_frame = self.frame_count - 1
-
-        if start_frame > end_frame:
-            QMessageBox.warning(self, "エラー", "開始フレームが終了フレームより大きいです")
+        error = self._range_selector.validate()
+        if error:
+            QMessageBox.warning(self, "エラー", error)
             return
 
-        self._detect_btn.setEnabled(False)
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setValue(0)
+        start_frame = self._range_selector.start_frame
+        end_frame = self._range_selector.end_frame
+
         self._status_label.setText("検出中...")
         self._temp_store = AnnotationStore()
 
-        self._worker = DetectionWorker(
+        worker = DetectionWorker(
             self.video_path,
             self._detector_type.currentText(),
             self._threshold.value(),
@@ -357,35 +267,22 @@ class DetectionDialog(QDialog):
             self._frame_skip.value(),
             self._bbox_scale.value() / 100.0,
         )
-        self._worker.progress.connect(self._on_progress)
-        self._worker.detection_found.connect(self._on_detection_found)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.start()
-
-    def _on_progress(self, current, total):
-        self._progress_bar.setMaximum(total)
-        self._progress_bar.setValue(current)
+        worker.detection_found.connect(self._on_detection_found)
+        worker.finished.connect(self._on_finished)
+        self._start_worker(worker)
 
     def _on_detection_found(self, frame_number, detections):
         """検出結果を受け取り、track_idを連番で割り当てる"""
         bbox_scale = self._bbox_scale.value() / 100.0
 
         for det in detections:
-            # バウンディングボックスを拡大
-            x1, y1, x2, y2 = det.bbox
+            bbox = BoundingBox(*det.bbox)
             if bbox_scale != 1.0:
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
-                new_w = int((x2 - x1) * bbox_scale)
-                new_h = int((y2 - y1) * bbox_scale)
-                x1 = max(0, cx - new_w // 2)
-                y1 = max(0, cy - new_h // 2)
-                x2 = cx + new_w // 2
-                y2 = cy + new_h // 2
+                bbox = bbox.scale_from_center(bbox_scale)
 
             ann = Annotation(
                 frame=frame_number,
-                bbox=BoundingBox(x1, y1, x2, y2),
+                bbox=bbox,
                 track_id=self._next_track_id,
                 is_manual=False,
                 confidence=det.confidence,
@@ -394,8 +291,7 @@ class DetectionDialog(QDialog):
             self._next_track_id += 1
 
     def _on_finished(self, success, message, detection_count):
-        self._detect_btn.setEnabled(True)
-        self._progress_bar.setVisible(False)
+        self._finish_worker(success)
 
         if success:
             self._status_label.setText(f"完了: {detection_count}件の顔を検出")
@@ -408,18 +304,7 @@ class DetectionDialog(QDialog):
                     "アノテーションとして追加されます。",
                 )
             else:
-                QMessageBox.information(
-                    self,
-                    "検出完了",
-                    "顔は検出されませんでした。",
-                )
+                QMessageBox.information(self, "検出完了", "顔は検出されませんでした。")
             self.accept()
         else:
-            self._status_label.setText(f"エラー: {message}")
-            self._status_label.setStyleSheet("color: red;")
-
-    def _on_cancel(self):
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait()
-        self.reject()
+            self._show_error(message)

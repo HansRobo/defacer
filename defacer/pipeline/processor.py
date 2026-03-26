@@ -1,7 +1,8 @@
 """メイン処理パイプライン"""
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 import numpy as np
 
@@ -12,6 +13,18 @@ from defacer.anonymization.mosaic import MosaicAnonymizer
 from defacer.anonymization.blur import GaussianBlurAnonymizer, SolidFillAnonymizer
 from defacer.gui.annotation import AnnotationStore
 from defacer.config import AnonymizationType, AnonymizationConfig
+
+
+@dataclass
+class ExportConfig:
+    """エクスポート設定"""
+    anonymizer: Any = None  # Anonymizer | None。Noneの場合はMosaicAnonymizer
+    ellipse: bool = True
+    bbox_scale: float = 1.0
+    interpolate: bool = True
+    codec: str = "libx264"
+    crf: int = 18
+    preset: str = "medium"
 
 
 def create_anonymizer(config: AnonymizationConfig) -> Anonymizer:
@@ -59,20 +72,9 @@ def process_frame(
     for ann in frame_annotations:
         bbox = ann.bbox
 
-        # バウンディングボックスを拡大
         if bbox_scale != 1.0:
-            cx, cy = bbox.center
-            new_w = int(bbox.width * bbox_scale)
-            new_h = int(bbox.height * bbox_scale)
-            x1 = max(0, cx - new_w // 2)
-            y1 = max(0, cy - new_h // 2)
-            x2 = min(w, cx + new_w // 2)
-            y2 = min(h, cy + new_h // 2)
-            scaled_bbox = (x1, y1, x2, y2)
-        else:
-            scaled_bbox = bbox.to_tuple()
-
-        result = anonymizer.apply(result, scaled_bbox, ellipse)
+            bbox = bbox.scale_from_center(bbox_scale, w, h)
+        result = anonymizer.apply(result, bbox.to_tuple(), ellipse)
 
     return result
 
@@ -113,14 +115,8 @@ def export_processed_video(
     input_path: str | Path,
     output_path: str | Path,
     annotations: AnnotationStore,
-    anonymizer: Anonymizer | None = None,
-    ellipse: bool = True,
-    bbox_scale: float = 1.0,
-    codec: str = "libx264",
-    crf: int = 18,
-    preset: str = "medium",
+    config: ExportConfig | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
-    interpolate: bool = True,
 ) -> bool:
     """
     処理済み動画をエクスポート
@@ -129,14 +125,8 @@ def export_processed_video(
         input_path: 入力動画パス
         output_path: 出力動画パス
         annotations: アノテーションストア
-        anonymizer: 使用するAnonymizer（Noneの場合はMosaicAnonymizer）
-        ellipse: 楕円形マスクを使用するか
-        bbox_scale: バウンディングボックスの拡大率
-        codec: 使用するコーデック
-        crf: 品質
-        preset: エンコード速度プリセット
+        config: エクスポート設定（Noneの場合はデフォルト値）
         progress_callback: 進捗コールバック(current, total)
-        interpolate: フレーム間を自動補間するか（デフォルト: True）
 
     Returns:
         成功した場合True
@@ -144,14 +134,14 @@ def export_processed_video(
     if not check_ffmpeg_available():
         raise RuntimeError("FFmpegが見つかりません。インストールしてください。")
 
-    if anonymizer is None:
-        anonymizer = MosaicAnonymizer()
+    if config is None:
+        config = ExportConfig()
+    anonymizer = config.anonymizer or MosaicAnonymizer()
 
     input_path = Path(input_path)
     output_path = Path(output_path)
 
-    # エクスポート前に補間を実行
-    if interpolate:
+    if config.interpolate:
         from defacer.tracking.interpolation import interpolate_sequential_annotations
         interpolate_sequential_annotations(annotations)
 
@@ -160,8 +150,8 @@ def export_processed_video(
             reader,
             annotations,
             anonymizer,
-            ellipse,
-            bbox_scale,
+            config.ellipse,
+            config.bbox_scale,
         )
 
         return export_video_with_audio(
@@ -172,8 +162,8 @@ def export_processed_video(
             reader.fps,
             reader.width,
             reader.height,
-            codec,
-            crf,
-            preset,
+            config.codec,
+            config.crf,
+            config.preset,
             progress_callback,
         )

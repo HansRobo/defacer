@@ -87,6 +87,23 @@ class BoundingBox:
             y2=max(0, min(self.y2, height)),
         )
 
+    def scale_from_center(
+        self, factor: float, image_width: int = 0, image_height: int = 0
+    ) -> "BoundingBox":
+        """中心を基点にスケールし、指定サイズで上限クランプ（0=クランプなし）"""
+        cx, cy = self.center
+        new_w = int(self.width * factor)
+        new_h = int(self.height * factor)
+        x1 = max(0, cx - new_w // 2)
+        y1 = max(0, cy - new_h // 2)
+        x2 = cx + new_w // 2
+        y2 = cy + new_h // 2
+        if image_width > 0:
+            x2 = min(image_width, x2)
+        if image_height > 0:
+            y2 = min(image_height, y2)
+        return BoundingBox(x1, y1, x2, y2)
+
     @classmethod
     def interpolate(cls, box1: "BoundingBox", box2: "BoundingBox", t: float) -> "BoundingBox":
         """2つのボックス間を線形補間"""
@@ -802,6 +819,11 @@ class AnnotationStore:
     def get_annotation_by_frame_track(self, frame: int, track_id: int) -> Annotation | None:
         """指定フレーム・トラックIDのアノテーションを取得（O(1)）"""
         return self._frame_track_index.get((frame, track_id))
+
+    def get_track_annotations(self, track_id: int) -> list["Annotation"]:
+        """指定トラックの全アノテーションをフレーム順で取得"""
+        anns_dict = self._track_annotations.get(track_id, {})
+        return sorted(anns_dict.values(), key=lambda a: a.frame)
 
     def get_all_track_stats(self) -> dict[int, dict]:
         """全トラックの統計情報を取得（インデックス活用でO(トラック数 × 平均アノテーション数)）

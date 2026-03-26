@@ -1,5 +1,6 @@
 """タイムラインウィジェット"""
 
+from defacer.gui.styles import MONOSPACE_LABEL_STYLE
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QSize
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QImage
 from PyQt5.QtWidgets import (
@@ -488,12 +489,12 @@ class TimelineWidget(QWidget):
 
         # 時間表示
         self._time_label = QLabel("00:00.000 / 00:00.000")
-        self._time_label.setStyleSheet("font-family: monospace; font-size: 12px;")
+        self._time_label.setStyleSheet(MONOSPACE_LABEL_STYLE)
         controls_layout.addWidget(self._time_label)
 
         # フレーム番号表示
         self._frame_label = QLabel("Frame: 0 / 0")
-        self._frame_label.setStyleSheet("font-family: monospace; font-size: 12px;")
+        self._frame_label.setStyleSheet(MONOSPACE_LABEL_STYLE)
         controls_layout.addWidget(self._frame_label)
 
         layout.addLayout(controls_layout)

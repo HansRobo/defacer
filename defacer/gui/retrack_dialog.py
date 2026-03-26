@@ -4,7 +4,6 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
-    QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -13,13 +12,14 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QGroupBox,
     QMessageBox,
-    QRadioButton,
     QComboBox,
 )
 
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import AnnotationStore, Annotation
 from defacer.detection.base import Detection
+from defacer.gui.worker_dialog import WorkerDialog
+from defacer.gui.frame_range_selector import FrameRangeSelector
 
 
 class RetrackWorker(QThread):
@@ -184,7 +184,7 @@ class RetrackWorker(QThread):
             reader.release()
 
 
-class RetrackDialog(QDialog):
+class RetrackDialog(WorkerDialog):
     """再トラッキング設定ダイアログ"""
 
     retrack_completed = pyqtSignal()  # 完了通知
@@ -197,57 +197,23 @@ class RetrackDialog(QDialog):
         frame_count: int,
         current_frame: int,
     ):
-        super().__init__(parent)
+        super().__init__(parent, "既存アノテーションの再トラッキング")
         self.video_path = video_path
         self.annotations = annotations
         self.frame_count = frame_count
         self.current_frame = current_frame
-        self._worker: RetrackWorker | None = None
-
-        self.setWindowTitle("既存アノテーションの再トラッキング")
-        self.setMinimumWidth(450)
-        self.setModal(True)
 
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # 範囲設定
-        range_group = QGroupBox("再トラッキング範囲")
-        range_layout = QVBoxLayout(range_group)
-
-        # 範囲選択
-        self._range_all = QRadioButton("全フレーム")
-        self._range_all.setChecked(True)
-        self._range_custom = QRadioButton("範囲を指定")
-
-        range_layout.addWidget(self._range_all)
-        range_layout.addWidget(self._range_custom)
-
-        # カスタム範囲
-        custom_layout = QHBoxLayout()
-        custom_layout.addWidget(QLabel("開始:"))
-        self._start_frame = QSpinBox()
-        self._start_frame.setRange(0, self.frame_count - 1)
-        self._start_frame.setValue(0)
-        custom_layout.addWidget(self._start_frame)
-
-        custom_layout.addWidget(QLabel("終了:"))
-        self._end_frame = QSpinBox()
-        self._end_frame.setRange(0, self.frame_count - 1)
-        self._end_frame.setValue(self.frame_count - 1)
-        custom_layout.addWidget(self._end_frame)
-
-        custom_layout.addStretch()
-        range_layout.addLayout(custom_layout)
-
-        layout.addWidget(range_group)
-
-        # 範囲選択の連動
-        self._range_all.toggled.connect(self._on_range_changed)
-        self._range_custom.toggled.connect(self._on_range_changed)
-        self._on_range_changed()
+        self._range_selector = FrameRangeSelector(
+            self.frame_count,
+            self.current_frame,
+            title="再トラッキング範囲",
+        )
+        layout.addWidget(self._range_selector)
 
         # トラッキング設定
         tracking_group = QGroupBox("トラッキング設定")
@@ -296,60 +262,23 @@ class RetrackDialog(QDialog):
 
         layout.addWidget(tracking_group)
 
-        # 進捗
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setVisible(False)
-        layout.addWidget(self._progress_bar)
-
-        self._status_label = QLabel("")
-        layout.addWidget(self._status_label)
-
-        # ボタン
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-
-        self._cancel_btn = QPushButton("キャンセル")
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        button_layout.addWidget(self._cancel_btn)
-
-        self._retrack_btn = QPushButton("再トラッキング")
-        self._retrack_btn.clicked.connect(self._start_retracking)
-        button_layout.addWidget(self._retrack_btn)
-
-        layout.addLayout(button_layout)
-
-    def _on_range_changed(self):
-        """範囲選択が変更された時"""
-        is_custom = self._range_custom.isChecked()
-        self._start_frame.setEnabled(is_custom)
-        self._end_frame.setEnabled(is_custom)
-
-        if self._range_all.isChecked():
-            self._start_frame.setValue(0)
-            self._end_frame.setValue(self.frame_count - 1)
+        self._add_progress_widgets(layout)
+        self._add_button_row(layout, "再トラッキング", self._start_retracking)
 
     def _start_retracking(self):
         """再トラッキングを開始"""
-        if self._range_custom.isChecked():
-            start_frame = self._start_frame.value()
-            end_frame = self._end_frame.value()
-        else:
-            start_frame = 0
-            end_frame = self.frame_count - 1
-
-        if start_frame > end_frame:
-            QMessageBox.warning(self, "エラー", "開始フレームが終了フレームより大きいです")
+        error = self._range_selector.validate()
+        if error:
+            QMessageBox.warning(self, "エラー", error)
             return
 
-        # Undo状態を保存
-        self.annotations._save_undo_state()
+        start_frame = self._range_selector.start_frame
+        end_frame = self._range_selector.end_frame
 
-        self._retrack_btn.setEnabled(False)
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setValue(0)
+        self.annotations._save_undo_state()
         self._status_label.setText("再トラッキング中...")
 
-        self._worker = RetrackWorker(
+        worker = RetrackWorker(
             self.video_path,
             self.annotations,
             start_frame,
@@ -358,17 +287,11 @@ class RetrackDialog(QDialog):
             max_age=self._tracking_max_age.value(),
             min_hits=self._tracking_min_hits.value(),
         )
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.start()
-
-    def _on_progress(self, current, total):
-        self._progress_bar.setMaximum(total)
-        self._progress_bar.setValue(current)
+        worker.finished.connect(self._on_finished)
+        self._start_worker(worker)
 
     def _on_finished(self, success, message, track_id_mapping):
-        self._retrack_btn.setEnabled(True)
-        self._progress_bar.setVisible(False)
+        self._finish_worker(success)
 
         if success:
             # メインスレッドでtrack_idを更新
@@ -401,16 +324,5 @@ class RetrackDialog(QDialog):
                 )
             self.accept()
         else:
-            self._status_label.setText(f"エラー: {message}")
-            self._status_label.setStyleSheet("color: red;")
-            QMessageBox.critical(
-                self,
-                "再トラッキングエラー",
-                message,
-            )
-
-    def _on_cancel(self):
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait()
-        self.reject()
+            self._show_error(message)
+            QMessageBox.critical(self, "再トラッキングエラー", message)
