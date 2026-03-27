@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 
 from defacer.detection import get_available_detectors, create_detector
+from defacer.models import DEFAULT_UI_THRESHOLD
 from defacer.video.reader import VideoReader
 from defacer.gui.annotation import AnnotationStore, Annotation, BoundingBox
 from defacer.gui.worker_dialog import WorkerDialog
@@ -186,7 +187,7 @@ class DetectionDialog(WorkerDialog):
         self._threshold = QDoubleSpinBox()
         self._threshold.setRange(0.1, 1.0)
         self._threshold.setSingleStep(0.05)
-        self._threshold.setValue(0.5)
+        self._threshold.setValue(DEFAULT_UI_THRESHOLD)
         self._threshold.setToolTip("高いほど確実な顔のみ検出（推奨: 0.5）")
         threshold_layout.addWidget(self._threshold)
         threshold_layout.addStretch()

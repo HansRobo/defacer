@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from defacer.models import BoundingBox
+from defacer.models import BoundingBox, DEFAULT_DETECTION_THRESHOLD
 from defacer.detection.base import FaceDetector, Detection
 
 
@@ -35,7 +35,7 @@ class YOLO11FaceDetector(FaceDetector):
 
     def __init__(
         self,
-        confidence_threshold: float = 0.25,
+        confidence_threshold: float = DEFAULT_DETECTION_THRESHOLD,
         model_path: str | None = None,
     ):
         """

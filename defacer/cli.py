@@ -8,6 +8,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from defacer import __version__
+from defacer.models import DEFAULT_UI_THRESHOLD
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -54,8 +55,8 @@ def create_parser() -> argparse.ArgumentParser:
     auto_parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="検出信頼度の閾値（デフォルト: 0.5）",
+        default=DEFAULT_UI_THRESHOLD,
+        help=f"検出信頼度の閾値（デフォルト: {DEFAULT_UI_THRESHOLD}）",
     )
     auto_parser.add_argument(
         "--mosaic-type",
@@ -140,7 +141,7 @@ def run_auto(args: argparse.Namespace) -> int:
         from defacer.video.reader import VideoReader
         from defacer.video.writer import check_ffmpeg_available
         from defacer.models import Annotation
-        from defacer.gui.annotation import AnnotationStore
+        from defacer.annotation import AnnotationStore
         from defacer.anonymization import create_anonymizer
         from defacer.pipeline.processor import export_processed_video, ExportConfig
     except ImportError as e:

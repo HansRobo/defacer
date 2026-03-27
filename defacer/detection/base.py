@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from defacer.models import BoundingBox
+from defacer.models import BoundingBox, DEFAULT_DETECTION_THRESHOLD
 
 
 @dataclass
@@ -45,24 +45,13 @@ def find_best_iou_match(
 
 def compute_iou(bbox1: BoundingBox, bbox2: BoundingBox) -> float:
     """2つのバウンディングボックスのIoUを計算"""
-    inter_x1 = max(bbox1.x1, bbox2.x1)
-    inter_y1 = max(bbox1.y1, bbox2.y1)
-    inter_x2 = min(bbox1.x2, bbox2.x2)
-    inter_y2 = min(bbox1.y2, bbox2.y2)
-
-    if inter_x1 >= inter_x2 or inter_y1 >= inter_y2:
-        return 0.0
-
-    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-    union_area = bbox1.area + bbox2.area - inter_area
-
-    return inter_area / union_area if union_area > 0 else 0.0
+    return bbox1.iou(bbox2)
 
 
 class FaceDetector(ABC):
     """顔検知の抽象ベースクラス"""
 
-    def __init__(self, confidence_threshold: float = 0.25):
+    def __init__(self, confidence_threshold: float = DEFAULT_DETECTION_THRESHOLD):
         self.confidence_threshold = confidence_threshold
 
     @abstractmethod

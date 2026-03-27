@@ -1,8 +1,8 @@
 """トラック統合サジェスト機能"""
 
 from dataclasses import dataclass
-from defacer.models import Annotation, BoundingBox
-from defacer.gui.annotation import AnnotationStore
+from defacer.models import Annotation, BoundingBox, DEFAULT_UI_THRESHOLD
+from defacer.annotation import AnnotationStore
 
 
 class UnionFind:
@@ -130,7 +130,7 @@ def compute_merge_suggestions(
     store: AnnotationStore,
     max_time_gap: int = 60,
     max_position_distance: float = 200.0,
-    min_confidence: float = 0.5,
+    min_confidence: float = DEFAULT_UI_THRESHOLD,
     progress_callback=None,
 ) -> list[MergeSuggestion]:
     """

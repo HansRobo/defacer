@@ -9,7 +9,7 @@ import numpy as np
 from defacer.video.reader import VideoReader
 from defacer.video.writer import export_video_with_audio, check_ffmpeg_available
 from defacer.anonymization import Anonymizer, MosaicAnonymizer
-from defacer.gui.annotation import AnnotationStore
+from defacer.annotation import AnnotationStore
 
 
 @dataclass

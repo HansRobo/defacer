@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import defacer
+
 # OpenCVとPyQt5のQtプラグイン競合を回避
 # PyQt5を先にインポートしてプラグインパスを確立
 from PyQt5.QtCore import Qt, QCoreApplication
@@ -912,13 +914,9 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "Defacerについて",
-            "Defacer v0.3.2\n\n"
+            f"Defacer v{defacer.__version__}\n\n"
             "動画内の顔を自動検知してモザイク処理を行うソフトウェア\n\n"
-            "検知漏れがある場合は手動で顔領域を指定できます。\n\n"
-            "v0.3.2の新機能:\n"
-            "- アノテーション削除処理を O(n) から O(1) に最適化（参照カウント方式）\n"
-            "- 位置編集時の無駄なトラック一覧更新を削減\n"
-            "- 大量データ処理時に進捗バーを表示",
+            "検知漏れがある場合は手動で顔領域を指定できます。",
         )
 
     def _show_shortcuts(self) -> None:

@@ -5,6 +5,10 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 
+# デフォルト信頼度閾値
+DEFAULT_DETECTION_THRESHOLD: float = 0.25  # 検出器レベル（YOLOへの直接指定）
+DEFAULT_UI_THRESHOLD: float = 0.5  # UIレベル（ユーザー向けデフォルト）
+
 
 @dataclass
 class BoundingBox:
@@ -103,6 +107,20 @@ class BoundingBox:
     def translate(self, dx: int, dy: int) -> "BoundingBox":
         """指定オフセット分だけ平行移動"""
         return BoundingBox(self.x1 + dx, self.y1 + dy, self.x2 + dx, self.y2 + dy)
+
+    def iou(self, other: "BoundingBox") -> float:
+        """2つのバウンディングボックスのIoUを計算"""
+        inter_x1 = max(self.x1, other.x1)
+        inter_y1 = max(self.y1, other.y1)
+        inter_x2 = min(self.x2, other.x2)
+        inter_y2 = min(self.y2, other.y2)
+
+        if inter_x1 >= inter_x2 or inter_y1 >= inter_y2:
+            return 0.0
+
+        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+        union_area = self.area + other.area - inter_area
+        return inter_area / union_area if union_area > 0 else 0.0
 
     def crop_from(self, frame: np.ndarray) -> "np.ndarray | None":
         """フレームから画像境界内でクランプしてROIを切り出す。空または範囲外の場合はNone"""

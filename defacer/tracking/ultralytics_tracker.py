@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from defacer.models import BoundingBox
+from defacer.models import BoundingBox, DEFAULT_DETECTION_THRESHOLD
 from defacer.tracking.base import FaceTracker, TrackedFace
 from defacer.detection.base import Detection, compute_iou, find_best_iou_match
 
@@ -13,7 +13,7 @@ class UltralyticsTracker(FaceTracker):
     def __init__(
         self,
         tracker: str = "botsort",
-        confidence_threshold: float = 0.25,
+        confidence_threshold: float = DEFAULT_DETECTION_THRESHOLD,
         max_age: int = 30,
         min_hits: int = 3,
     ):

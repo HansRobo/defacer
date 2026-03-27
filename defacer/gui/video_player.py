@@ -1,6 +1,6 @@
 """動画プレーヤーウィジェット"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import (
@@ -1008,23 +1008,13 @@ class VideoPlayerWidget(QLabel):
 
         if existing:
             # 既存のものを更新
-            existing.bbox = BoundingBox(
-                self._selected_annotation.bbox.x1,
-                self._selected_annotation.bbox.y1,
-                self._selected_annotation.bbox.x2,
-                self._selected_annotation.bbox.y2,
-            )
+            existing.bbox = dc_replace(self._selected_annotation.bbox)
             target_ann = existing
         else:
             # 新規作成
             new_ann = Annotation(
                 frame=next_frame,
-                bbox=BoundingBox(
-                    self._selected_annotation.bbox.x1,
-                    self._selected_annotation.bbox.y1,
-                    self._selected_annotation.bbox.x2,
-                    self._selected_annotation.bbox.y2,
-                ),
+                bbox=dc_replace(self._selected_annotation.bbox),
                 track_id=self._selected_annotation.track_id,
                 is_manual=True,
             )
@@ -1141,12 +1131,7 @@ class VideoPlayerWidget(QLabel):
             if source_ann:
                 new_ann = Annotation(
                     frame=to_frame,
-                    bbox=BoundingBox(
-                        source_ann.bbox.x1,
-                        source_ann.bbox.y1,
-                        source_ann.bbox.x2,
-                        source_ann.bbox.y2,
-                    ),
+                    bbox=dc_replace(source_ann.bbox),
                     track_id=track_id,
                     is_manual=True,
                 )

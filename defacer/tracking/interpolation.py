@@ -1,7 +1,7 @@
 """フレーム間補間機能"""
 
 from defacer.models import Annotation, BoundingBox
-from defacer.gui.annotation import AnnotationStore
+from defacer.annotation import AnnotationStore
 
 
 def _interpolate_between(
