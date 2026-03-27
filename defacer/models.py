@@ -137,3 +137,19 @@ class Annotation:
             is_manual=data.get("is_manual", True),
             confidence=data.get("confidence", 1.0),
         )
+
+    @classmethod
+    def from_detection(
+        cls,
+        det,
+        frame: int,
+        track_id: int | None,
+        bbox_scale: float = 1.0,
+        image_width: int = 0,
+        image_height: int = 0,
+    ) -> "Annotation":
+        """DetectionまたはTrackedFaceからAnnotationを生成"""
+        bbox = det.bbox
+        if bbox_scale != 1.0:
+            bbox = bbox.scale_from_center(bbox_scale, image_width, image_height)
+        return cls(frame=frame, bbox=bbox, track_id=track_id, is_manual=False, confidence=det.confidence)

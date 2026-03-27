@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from defacer.models import BoundingBox
 from defacer.detection.base import FaceDetector, Detection
 
 
@@ -100,7 +101,7 @@ class YOLO11FaceDetector(FaceDetector):
                 x1, y1, x2, y2 = map(int, xyxy)
 
                 detection = Detection(
-                    bbox=(x1, y1, x2, y2),
+                    bbox=BoundingBox(x1, y1, x2, y2),
                     confidence=confidence,
                     landmarks=None,
                 )

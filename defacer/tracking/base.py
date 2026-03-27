@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from defacer.models import BoundingBox
 from defacer.detection.base import Detection
 
 
@@ -13,33 +14,9 @@ class TrackedFace:
     """追跡された顔を表すデータクラス"""
 
     track_id: int
-    bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
+    bbox: BoundingBox
     confidence: float
     age: int = 0  # 最後に検出されてからのフレーム数
-
-    @property
-    def x1(self) -> int:
-        return self.bbox[0]
-
-    @property
-    def y1(self) -> int:
-        return self.bbox[1]
-
-    @property
-    def x2(self) -> int:
-        return self.bbox[2]
-
-    @property
-    def y2(self) -> int:
-        return self.bbox[3]
-
-    @property
-    def width(self) -> int:
-        return self.x2 - self.x1
-
-    @property
-    def height(self) -> int:
-        return self.y2 - self.y1
 
     def to_detection(self) -> Detection:
         """Detection形式に変換"""

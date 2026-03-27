@@ -114,14 +114,13 @@ class DetectionWorker(QThread):
                     from defacer.detection.base import Detection
                     adjusted_detections = []
                     for det in detections:
-                        adjusted_bbox = (
-                            det.x1 + roi_x1,
-                            det.y1 + roi_y1,
-                            det.x2 + roi_x1,
-                            det.y2 + roi_y1,
-                        )
                         adjusted_det = Detection(
-                            bbox=adjusted_bbox,
+                            bbox=BoundingBox(
+                                det.bbox.x1 + roi_x1,
+                                det.bbox.y1 + roi_y1,
+                                det.bbox.x2 + roi_x1,
+                                det.bbox.y2 + roi_y1,
+                            ),
                             confidence=det.confidence,
                             landmarks=det.landmarks,
                         )
@@ -276,17 +275,7 @@ class DetectionDialog(WorkerDialog):
         bbox_scale = self._bbox_scale.value() / 100.0
 
         for det in detections:
-            bbox = BoundingBox(*det.bbox)
-            if bbox_scale != 1.0:
-                bbox = bbox.scale_from_center(bbox_scale)
-
-            ann = Annotation(
-                frame=frame_number,
-                bbox=bbox,
-                track_id=self._next_track_id,
-                is_manual=False,
-                confidence=det.confidence,
-            )
+            ann = Annotation.from_detection(det, frame_number, self._next_track_id, bbox_scale)
             self._temp_store.add(ann, save_undo=False)
             self._next_track_id += 1
 

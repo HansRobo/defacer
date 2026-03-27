@@ -1419,17 +1419,7 @@ class VideoPlayerWidget(QLabel):
         bbox_scale = 1.1
 
         for det in detections:
-            bbox = BoundingBox(*det.bbox)
-            if bbox_scale != 1.0:
-                bbox = bbox.scale_from_center(bbox_scale)
-
-            ann = Annotation(
-                frame=frame_number,
-                bbox=bbox,
-                track_id=self._annotation_store.new_track_id(),
-                is_manual=False,
-                confidence=det.confidence,
-            )
+            ann = Annotation.from_detection(det, frame_number, self._annotation_store.new_track_id(), bbox_scale)
             self._annotation_store.add(ann, save_undo=False)
 
         self.annotations_changed.emit(True)

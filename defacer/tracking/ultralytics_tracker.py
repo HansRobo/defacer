@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from defacer.models import BoundingBox
 from defacer.tracking.base import FaceTracker, TrackedFace
 from defacer.detection.base import Detection, compute_iou, find_best_iou_match
 
@@ -69,7 +70,7 @@ class UltralyticsTracker(FaceTracker):
                     x1, y1, x2, y2 = map(int, box)
                     tracked_face = TrackedFace(
                         track_id=track_id,
-                        bbox=(x1, y1, x2, y2),
+                        bbox=BoundingBox(x1, y1, x2, y2),
                         confidence=float(conf),
                         age=0,
                     )

@@ -1,7 +1,7 @@
 """トラック統合サジェスト機能"""
 
 from dataclasses import dataclass
-from defacer.models import Annotation
+from defacer.models import Annotation, BoundingBox
 from defacer.gui.annotation import AnnotationStore
 
 
@@ -53,8 +53,8 @@ class TrackInfo:
     track_id: int
     frame_min: int
     frame_max: int
-    last_bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
-    first_bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
+    last_bbox: BoundingBox
+    first_bbox: BoundingBox
 
 
 @dataclass
@@ -110,8 +110,8 @@ def collect_track_infos(store: AnnotationStore) -> list[TrackInfo]:
             track_id=track_id,
             frame_min=first_ann.frame,
             frame_max=last_ann.frame,
-            first_bbox=first_ann.bbox.to_tuple(),
-            last_bbox=last_ann.bbox.to_tuple(),
+            first_bbox=first_ann.bbox,
+            last_bbox=last_ann.bbox,
         )
         track_infos.append(track_info)
 
@@ -119,12 +119,6 @@ def collect_track_infos(store: AnnotationStore) -> list[TrackInfo]:
     track_infos.sort(key=lambda t: t.frame_min)
 
     return track_infos
-
-
-def _bbox_size(bbox: tuple[int, int, int, int]) -> tuple[int, int]:
-    """バウンディングボックスのサイズを計算"""
-    x1, y1, x2, y2 = bbox
-    return (x2 - x1, y2 - y1)
 
 
 def _distance(p1: tuple[float, float], p2: tuple[float, float]) -> float:
@@ -207,10 +201,8 @@ def compute_merge_suggestions(
             time_gap = track_b.frame_min - track_a.frame_max
 
             # 粗い位置チェック（マンハッタン距離で高速フィルタ）
-            ax1, ay1, ax2, ay2 = track_a.last_bbox
-            bx1, by1, bx2, by2 = track_b.first_bbox
-            a_center_x, a_center_y = (ax1 + ax2) / 2, (ay1 + ay2) / 2
-            b_center_x, b_center_y = (bx1 + bx2) / 2, (by1 + by2) / 2
+            a_center_x, a_center_y = track_a.last_bbox.center
+            b_center_x, b_center_y = track_b.first_bbox.center
 
             manhattan_distance = abs(a_center_x - b_center_x) + abs(a_center_y - b_center_y)
             if manhattan_distance > max_position_distance * 1.5:
@@ -223,16 +215,16 @@ def compute_merge_suggestions(
             # スコア計算
             time_score = max(0.0, 1.0 - time_gap / max_time_gap) * 0.4
             position_score = max(0.0, 1.0 - position_distance / max_position_distance) * 0.4
-            size_a = _bbox_size(track_a.last_bbox)
-            size_b = _bbox_size(track_b.first_bbox)
+            a_width = track_a.last_bbox.width
+            b_width = track_b.first_bbox.width
 
-            max_width = max(size_a[0], size_b[0])
+            max_width = max(a_width, b_width)
             if max_width == 0:
                 continue
 
-            size_ratio = min(size_a[0], size_b[0]) / max_width
+            size_ratio = min(a_width, b_width) / max_width
             size_score = size_ratio * 0.15
-            movement_score = 0.05 if abs(size_a[0] - size_b[0]) < 20 else 0.0
+            movement_score = 0.05 if abs(a_width - b_width) < 20 else 0.0
             confidence = time_score + position_score + size_score + movement_score
 
             if confidence < min_confidence:

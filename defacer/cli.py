@@ -1,11 +1,6 @@
 """CLIエントリーポイント"""
 
-# OpenCVとPyQt5のQtプラグイン競合を回避（他のインポートより先に実行）
 import os
-
-os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
-os.environ.pop("QT_PLUGIN_PATH", None)
-
 import argparse
 import sys
 from pathlib import Path
@@ -144,7 +139,7 @@ def run_auto(args: argparse.Namespace) -> int:
         from defacer.detection import get_available_detectors, create_detector
         from defacer.video.reader import VideoReader
         from defacer.video.writer import check_ffmpeg_available
-        from defacer.models import Annotation, BoundingBox
+        from defacer.models import Annotation
         from defacer.gui.annotation import AnnotationStore
         from defacer.anonymization import create_anonymizer
         from defacer.pipeline.processor import export_processed_video, ExportConfig
@@ -222,52 +217,18 @@ def run_auto(args: argparse.Namespace) -> int:
         for frame_num, frame in reader:
             if tracker and tracker.supports_integrated_tracking():
                 # 統合トラッキング: detect + track を一度に
-                tracked = tracker.track(frame)
-                for t in tracked:
-                    bbox = BoundingBox(*t.bbox)
-                    if args.bbox_scale != 1.0:
-                        bbox = bbox.scale_from_center(args.bbox_scale, reader.width, reader.height)
-                    ann = Annotation(
-                        frame=frame_num,
-                        bbox=bbox,
-                        track_id=t.track_id,
-                        is_manual=False,
-                        confidence=t.confidence,
-                    )
-                    store.add(ann, save_undo=False)
+                for t in tracker.track(frame):
+                    store.add(Annotation.from_detection(t, frame_num, t.track_id, args.bbox_scale, reader.width, reader.height), save_undo=False)
             else:
-                # トラッキングなし、または旧API
                 detections = detector.detect(frame)
-
                 if tracker:
                     # 旧APIトラッカー（DeepSORTなど）
-                    tracked = tracker.update(detections, frame)
-                    for t in tracked:
-                        bbox = BoundingBox(*t.bbox)
-                        if args.bbox_scale != 1.0:
-                            bbox = bbox.scale_from_center(args.bbox_scale, reader.width, reader.height)
-                        ann = Annotation(
-                            frame=frame_num,
-                            bbox=bbox,
-                            track_id=t.track_id,
-                            is_manual=False,
-                            confidence=t.confidence,
-                        )
-                        store.add(ann, save_undo=False)
+                    for t in tracker.update(detections, frame):
+                        store.add(Annotation.from_detection(t, frame_num, t.track_id, args.bbox_scale, reader.width, reader.height), save_undo=False)
                 else:
                     # トラッキングなし
                     for det in detections:
-                        bbox = BoundingBox(*det.bbox)
-                        if args.bbox_scale != 1.0:
-                            bbox = bbox.scale_from_center(args.bbox_scale, reader.width, reader.height)
-                        ann = Annotation(
-                            frame=frame_num,
-                            bbox=bbox,
-                            track_id=next_track_id,
-                            is_manual=False,
-                            confidence=det.confidence,
-                        )
-                        store.add(ann, save_undo=False)
+                        store.add(Annotation.from_detection(det, frame_num, next_track_id, args.bbox_scale, reader.width, reader.height), save_undo=False)
                         next_track_id += 1
 
             pbar.update(1)

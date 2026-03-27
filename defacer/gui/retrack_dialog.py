@@ -55,7 +55,7 @@ class RetrackWorker(QThread):
         """bbox位置でマッチングしてtrack_idマッピングを構築"""
         mapping = {}
         for idx, ann in enumerate(anns):
-            best_match = find_best_iou_match(ann.bbox.to_tuple(), tracked, threshold=0.5)
+            best_match = find_best_iou_match(ann.bbox, tracked, threshold=0.5)
             if best_match is not None:
                 mapping[idx] = best_match.track_id
         return mapping
@@ -112,7 +112,7 @@ class RetrackWorker(QThread):
 
                 # Annotation -> Detection 変換
                 detections = [
-                    Detection(bbox=a.bbox.to_tuple(), confidence=a.confidence if a.confidence else 1.0)
+                    Detection(bbox=a.bbox, confidence=a.confidence if a.confidence else 1.0)
                     for a in anns
                 ]
 

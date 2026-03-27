@@ -4,6 +4,30 @@ from defacer.models import Annotation, BoundingBox
 from defacer.gui.annotation import AnnotationStore
 
 
+def _interpolate_between(
+    store: AnnotationStore,
+    ann1: Annotation,
+    ann2: Annotation,
+    track_id: int | None,
+    is_manual: bool,
+) -> int:
+    """2つのアノテーション間のフレームを線形補間で埋める"""
+    f1, f2 = ann1.frame, ann2.frame
+    count = 0
+    for frame in range(f1 + 1, f2):
+        t = (frame - f1) / (f2 - f1)
+        new_ann = Annotation(
+            frame=frame,
+            bbox=BoundingBox.interpolate(ann1.bbox, ann2.bbox, t),
+            track_id=track_id,
+            is_manual=is_manual,
+            confidence=1.0,
+        )
+        store.add(new_ann, save_undo=False)
+        count += 1
+    return count
+
+
 def interpolate_sequential_annotations(
     store: AnnotationStore,
 ) -> int:
@@ -45,23 +69,9 @@ def interpolate_sequential_annotations(
         ann1 = anns1[0]
         ann2 = anns2[0]
 
-        # 中間フレームを生成
-        for frame in range(f1 + 1, f2):
-            t = (frame - f1) / (f2 - f1)
-            interpolated_bbox = BoundingBox.interpolate(ann1.bbox, ann2.bbox, t)
-
-            # track_idは元のアノテーションから継承（なければNone）
-            track_id = ann1.track_id if ann1.track_id is not None else ann2.track_id
-
-            new_ann = Annotation(
-                frame=frame,
-                bbox=interpolated_bbox,
-                track_id=track_id,
-                is_manual=False,
-                confidence=1.0,
-            )
-            store.add(new_ann, save_undo=False)
-            count += 1
+        # track_idは元のアノテーションから継承（なければNone）
+        track_id = ann1.track_id if ann1.track_id is not None else ann2.track_id
+        count += _interpolate_between(store, ann1, ann2, track_id, is_manual=False)
 
     return count
 
@@ -118,20 +128,7 @@ def interpolate_track(
         ann1 = track_annotations[f1]
         ann2 = track_annotations[f2]
 
-        # 中間フレームを生成
-        for frame in range(f1 + 1, f2):
-            t = (frame - f1) / (f2 - f1)
-            interpolated_bbox = BoundingBox.interpolate(ann1.bbox, ann2.bbox, t)
-
-            new_ann = Annotation(
-                frame=frame,
-                bbox=interpolated_bbox,
-                track_id=track_id,
-                is_manual=True,
-                confidence=1.0,
-            )
-            store.add(new_ann, save_undo=False)
-            count += 1
+        count += _interpolate_between(store, ann1, ann2, track_id, is_manual=True)
 
     return count
 
