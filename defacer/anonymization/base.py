@@ -6,6 +6,8 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from defacer.models import BoundingBox
+
 
 class Anonymizer(ABC):
     """匿名化処理の抽象ベースクラス"""
@@ -14,7 +16,7 @@ class Anonymizer(ABC):
     def apply(
         self,
         frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
+        bbox: BoundingBox,
         ellipse: bool = True,
     ) -> np.ndarray:
         """
@@ -22,7 +24,7 @@ class Anonymizer(ABC):
 
         Args:
             frame: BGR画像（OpenCV形式）
-            bbox: (x1, y1, x2, y2) 形式のバウンディングボックス
+            bbox: バウンディングボックス
             ellipse: Trueの場合は楕円形、Falseの場合は矩形でマスク
 
         Returns:
@@ -33,7 +35,7 @@ class Anonymizer(ABC):
     def _apply_roi(
         self,
         frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
+        bbox: BoundingBox,
         transform_roi: Callable[[np.ndarray], np.ndarray],
         ellipse: bool,
     ) -> np.ndarray:
@@ -45,20 +47,16 @@ class Anonymizer(ABC):
 
         Args:
             frame: 入力フレーム
-            bbox: (x1, y1, x2, y2) 形式のバウンディングボックス
+            bbox: バウンディングボックス
             transform_roi: ROI（numpy配列）を受け取り変換後ROIを返す関数
             ellipse: Trueの場合は楕円形、Falseの場合は矩形でマスク
 
         Returns:
             処理後のフレーム（変更なしの場合は元のframeオブジェクトを返す）
         """
-        x1, y1, x2, y2 = bbox
         h, w = frame.shape[:2]
-
-        x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
-        x2 = max(0, min(x2, w))
-        y2 = max(0, min(y2, h))
+        b = bbox.clamp(w, h)
+        x1, y1, x2, y2 = b.x1, b.y1, b.x2, b.y2
 
         if x2 <= x1 or y2 <= y1:
             return frame
@@ -85,7 +83,7 @@ class Anonymizer(ABC):
     def apply_multiple(
         self,
         frame: np.ndarray,
-        bboxes: list[tuple[int, int, int, int]],
+        bboxes: list[BoundingBox],
         ellipse: bool = True,
     ) -> np.ndarray:
         """
@@ -99,7 +97,7 @@ class Anonymizer(ABC):
         Returns:
             処理後のフレーム
         """
-        result = frame.copy()
+        result = frame
         for bbox in bboxes:
             result = self.apply(result, bbox, ellipse)
         return result

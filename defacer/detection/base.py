@@ -62,7 +62,7 @@ def compute_iou(bbox1: BoundingBox, bbox2: BoundingBox) -> float:
 class FaceDetector(ABC):
     """顔検知の抽象ベースクラス"""
 
-    def __init__(self, confidence_threshold: float = 0.5):
+    def __init__(self, confidence_threshold: float = 0.25):
         self.confidence_threshold = confidence_threshold
 
     @abstractmethod

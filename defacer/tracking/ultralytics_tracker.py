@@ -67,10 +67,9 @@ class UltralyticsTracker(FaceTracker):
                 track_ids = result.boxes.id.int().cpu().tolist()
 
                 for box, conf, track_id in zip(boxes, confidences, track_ids):
-                    x1, y1, x2, y2 = map(int, box)
                     tracked_face = TrackedFace(
                         track_id=track_id,
-                        bbox=BoundingBox(x1, y1, x2, y2),
+                        bbox=BoundingBox.from_xyxy(box),
                         confidence=float(conf),
                         age=0,
                     )

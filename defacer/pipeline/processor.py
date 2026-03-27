@@ -59,7 +59,7 @@ def process_frame(
 
         if bbox_scale != 1.0:
             bbox = bbox.scale_from_center(bbox_scale, w, h)
-        result = anonymizer.apply(result, bbox.to_tuple(), ellipse)
+        result = anonymizer.apply(result, bbox, ellipse)
 
     return result
 

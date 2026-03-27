@@ -91,20 +91,16 @@ class DetectionWorker(QThread):
                     continue
 
                 # ROI領域のクロップ処理
+                roi_offset_x = roi_offset_y = 0
                 if self.roi is not None:
-                    roi_x1 = max(0, int(self.roi.x1))
-                    roi_y1 = max(0, int(self.roi.y1))
-                    roi_x2 = min(frame.shape[1], int(self.roi.x2))
-                    roi_y2 = min(frame.shape[0], int(self.roi.y2))
-
-                    if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
+                    cropped_frame = self.roi.crop_from(frame)
+                    if cropped_frame is None:
                         continue
-
-                    cropped_frame = frame[roi_y1:roi_y2, roi_x1:roi_x2]
                     detection_frame = cropped_frame
+                    b = self.roi.clamp(frame.shape[1], frame.shape[0])
+                    roi_offset_x, roi_offset_y = b.x1, b.y1
                 else:
                     detection_frame = frame
-                    roi_x1 = roi_y1 = 0
 
                 # 純粋な検出のみ（トラッキングなし）
                 detections = detector.detect(detection_frame)
@@ -112,20 +108,14 @@ class DetectionWorker(QThread):
                 # ROI使用時は座標を補正
                 if self.roi is not None and detections:
                     from defacer.detection.base import Detection
-                    adjusted_detections = []
-                    for det in detections:
-                        adjusted_det = Detection(
-                            bbox=BoundingBox(
-                                det.bbox.x1 + roi_x1,
-                                det.bbox.y1 + roi_y1,
-                                det.bbox.x2 + roi_x1,
-                                det.bbox.y2 + roi_y1,
-                            ),
+                    detections = [
+                        Detection(
+                            bbox=det.bbox.translate(roi_offset_x, roi_offset_y),
                             confidence=det.confidence,
                             landmarks=det.landmarks,
                         )
-                        adjusted_detections.append(adjusted_det)
-                    detections = adjusted_detections
+                        for det in detections
+                    ]
 
                 if detections:
                     self.detection_found.emit(frame_num, detections)

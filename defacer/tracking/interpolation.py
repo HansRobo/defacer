@@ -94,40 +94,26 @@ def interpolate_track(
     Returns:
         追加されたアノテーション数
     """
-    # 指定トラックIDのアノテーションを収集
-    track_annotations: dict[int, Annotation] = {}
-    for frame in store.get_all_frames():
-        for ann in store.get_frame_annotations(frame):
-            if ann.track_id == track_id:
-                track_annotations[frame] = ann
-                break
+    # 指定トラックIDのアノテーションをインデックスから直接取得（O(1)）
+    sorted_anns = store.get_track_annotations(track_id)
 
-    if len(track_annotations) < 2:
+    if len(sorted_anns) < 2:
         return 0
 
-    frames = sorted(track_annotations.keys())
-
     if start_frame is not None:
-        frames = [f for f in frames if f >= start_frame]
+        sorted_anns = [a for a in sorted_anns if a.frame >= start_frame]
     if end_frame is not None:
-        frames = [f for f in frames if f <= end_frame]
+        sorted_anns = [a for a in sorted_anns if a.frame <= end_frame]
 
-    if len(frames) < 2:
+    if len(sorted_anns) < 2:
         return 0
 
     count = 0
 
     # 連続するフレームペア間を補間
-    for i in range(len(frames) - 1):
-        f1 = frames[i]
-        f2 = frames[i + 1]
-
-        if f2 - f1 <= 1:
+    for ann1, ann2 in zip(sorted_anns, sorted_anns[1:]):
+        if ann2.frame - ann1.frame <= 1:
             continue  # 隣接フレームは補間不要
-
-        ann1 = track_annotations[f1]
-        ann2 = track_annotations[f2]
-
         count += _interpolate_between(store, ann1, ann2, track_id, is_manual=True)
 
     return count
@@ -149,11 +135,7 @@ def interpolate_all_tracks(
     Returns:
         追加されたアノテーション総数
     """
-    # 全トラックIDを収集
-    track_ids = set()
-    for ann in store:
-        if ann.track_id is not None:
-            track_ids.add(ann.track_id)
+    track_ids = store.get_all_track_ids()
 
     total_count = 0
     for track_id in track_ids:

@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from defacer.anonymization.base import Anonymizer
+from defacer.models import BoundingBox
 
 
 class GaussianBlurAnonymizer(Anonymizer):
@@ -21,7 +22,7 @@ class GaussianBlurAnonymizer(Anonymizer):
     def apply(
         self,
         frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
+        bbox: BoundingBox,
         ellipse: bool = True,
     ) -> np.ndarray:
         """
@@ -61,7 +62,7 @@ class SolidFillAnonymizer(Anonymizer):
     def apply(
         self,
         frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
+        bbox: BoundingBox,
         ellipse: bool = True,
     ) -> np.ndarray:
         """

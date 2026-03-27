@@ -96,12 +96,8 @@ class YOLO11FaceDetector(FaceDetector):
                 if confidence < self.confidence_threshold:
                     continue
 
-                # バウンディングボックスを取得
-                xyxy = box.xyxy[0].cpu().numpy()
-                x1, y1, x2, y2 = map(int, xyxy)
-
                 detection = Detection(
-                    bbox=BoundingBox(x1, y1, x2, y2),
+                    bbox=BoundingBox.from_xyxy(box.xyxy[0].cpu().numpy()),
                     confidence=confidence,
                     landmarks=None,
                 )

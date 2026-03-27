@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from defacer.anonymization.base import Anonymizer
+from defacer.models import BoundingBox
 
 
 class MosaicAnonymizer(Anonymizer):
@@ -19,7 +20,7 @@ class MosaicAnonymizer(Anonymizer):
     def apply(
         self,
         frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
+        bbox: BoundingBox,
         ellipse: bool = True,
     ) -> np.ndarray:
         """

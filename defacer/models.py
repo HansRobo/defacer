@@ -3,6 +3,8 @@
 import json
 from dataclasses import dataclass, asdict
 
+import numpy as np
+
 
 @dataclass
 class BoundingBox:
@@ -97,6 +99,24 @@ class BoundingBox:
         if image_height > 0:
             y2 = min(image_height, y2)
         return BoundingBox(x1, y1, x2, y2)
+
+    def translate(self, dx: int, dy: int) -> "BoundingBox":
+        """指定オフセット分だけ平行移動"""
+        return BoundingBox(self.x1 + dx, self.y1 + dy, self.x2 + dx, self.y2 + dy)
+
+    def crop_from(self, frame: np.ndarray) -> "np.ndarray | None":
+        """フレームから画像境界内でクランプしてROIを切り出す。空または範囲外の場合はNone"""
+        h, w = frame.shape[:2]
+        b = self.clamp(w, h)
+        if b.x2 <= b.x1 or b.y2 <= b.y1:
+            return None
+        return frame[b.y1:b.y2, b.x1:b.x2]
+
+    @classmethod
+    def from_xyxy(cls, array) -> "BoundingBox":
+        """YOLO推論結果などxyxy形式の配列からBoundingBoxを生成"""
+        x1, y1, x2, y2 = map(int, array)
+        return cls(x1, y1, x2, y2)
 
     @classmethod
     def interpolate(cls, box1: "BoundingBox", box2: "BoundingBox", t: float) -> "BoundingBox":
